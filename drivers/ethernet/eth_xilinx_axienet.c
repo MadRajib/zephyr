@@ -133,6 +133,8 @@ static void xilinx_axienet_rx_callback(const struct device *dma, void *user_data
 		(data->rx_completed_buffer_index + 1) % CONFIG_ETH_XILINX_AXIENET_BUFFER_NUM_RX;
 	size_t current_descriptor = data->rx_completed_buffer_index;
 
+	data->rx_completed_buffer_index = next_descriptor;
+
 	if (!net_if_is_up(data->interface)) {
 		/*
 		 * cannot receive data now, so discard silently
@@ -146,8 +148,6 @@ static void xilinx_axienet_rx_callback(const struct device *dma, void *user_data
 		eth_stats_update_errors_rx(data->interface);
 		goto setup_new_transfer;
 	}
-
-	data->rx_completed_buffer_index = next_descriptor;
 
 	packet_size = dma_xilinx_axi_dma_last_received_frame_length(dma);
 	pkt = net_pkt_rx_alloc_with_buffer(data->interface, packet_size,
