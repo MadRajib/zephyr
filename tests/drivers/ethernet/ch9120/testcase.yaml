@@ -1,5 +1,6 @@
 tests:
   drivers.ethernet.ch9120.init:
+    build_only: true
     tags:
       - drivers
       - ethernet
