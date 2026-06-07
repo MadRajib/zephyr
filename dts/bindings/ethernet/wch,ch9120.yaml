@@ -7,6 +7,8 @@ compatible: "wch,ch9120"
 
 include: base.yaml
 
+bus: uart
+
 properties:
   uart:
     type: phandle

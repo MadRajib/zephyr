@@ -1,6 +1,10 @@
 #ifndef __DRIVERS_NET_CH9120_H__
 #define __DRIVERS_NET_CH9120_H__
 
+#include <zephyr/net/socket.h>
+
+#define CH9120_RX_BUF_SIZE 1024
+
 enum ch9120_sock_state {
     CH9120_SOCK_CLOSED,
     CH9120_SOCK_OPEN,
@@ -31,7 +35,6 @@ struct ch9120_socket {
 struct ch9120_runtime {
 
     struct net_if *iface;
-    const struct device *uart_dev;
 
     struct ch9120_socket sock;
     struct k_mutex drv_lock;
@@ -40,6 +43,6 @@ struct ch9120_runtime {
     k_thread_stack_t *rx_stack;
 };
 
-static int ch9120_socket_create(int family, int type, int proto);
+int ch9120_socket_create(int family, int type, int proto);
 
 #endif /* __DRIVERS_NET_CH9120_H__ */
