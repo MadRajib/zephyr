@@ -334,44 +334,10 @@ static void ch9120_iface_init(struct net_if *iface)
     net_if_socket_offload_set(iface, ch9120_socket_create);
 }
 
-static enum ethernet_hw_caps ch9120_get_capabilities(const struct device *dev __unused,
-						    struct net_if *iface __unused)
-{
-    return 0;
-}
-
-static int ch9120_set_config(const struct device *dev,
-				    struct net_if *iface __unused,
-				    enum ethernet_config_type type,
-				    const struct ethernet_config *config)
-{
-    return 0;
-}
-
-static int ch9120_start(const struct device *dev, struct net_if *iface)
-{
-    return 0;
-}
-
-static int ch9120_stop(const struct device *dev, struct net_if *iface)
-{
-    return 0;
-}
-
-static int ch9120_send(const struct device *dev, struct net_pkt *pkt)
-{
-    return 0;
-}
-
 /*---- Device Instance END ----*/
 
-static const struct ethernet_api ch9120_if_apis = {
+static struct offloaded_if_api api_funcs = {
 	.iface_api.init = ch9120_iface_init,
-	.get_capabilities = ch9120_get_capabilities,
-	.set_config = ch9120_set_config,
-	.start = ch9120_start,
-	.stop = ch9120_stop,
-	.send = ch9120_send,
 };
 
 static const struct socket_op_vtable ch9120_socket_fd_op_vtable = {
