@@ -1,0 +1,21 @@
+/* boards/rpi_pico2.overlay */
+
+&uart1 {
+    status = "okay";
+    current-speed = <9600>;
+    pinctrl-0 = <&uart1_default>;
+    pinctrl-names = "default";
+};
+
+/ {
+    ch9120_eth0: ch9120_offload {
+        compatible = "wch,ch9120";
+        uart = <&uart1>;
+
+        reset-gpios = <&gpio0 19 GPIO_ACTIVE_LOW>;
+        config-gpios = <&gpio0 18 GPIO_ACTIVE_LOW>;
+        tcpcs-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+
+        status = "okay";
+    };
+};

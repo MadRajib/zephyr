@@ -1,0 +1,24 @@
+tests:
+  drivers.ethernet.ch9120.init:
+    tags:
+      - drivers
+      - ethernet
+      - net
+    platform_allow:
+      - rpi_pico2          # only run on this board
+    harness: ztest
+    harness_config:
+      fixture: ch9120_connected   # tells CI this needs physical hardware wired up
+    timeout: 60
+
+  drivers.ethernet.ch9120.socket:
+    tags:
+      - drivers
+      - ethernet
+      - net
+    platform_allow:
+      - rpi_pico2
+    harness: ztest
+    harness_config:
+      fixture: ch9120_network     # needs network connectivity too
+    timeout: 120

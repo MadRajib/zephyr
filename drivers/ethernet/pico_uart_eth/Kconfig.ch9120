@@ -1,0 +1,14 @@
+# CH9120 ethernet driver options
+
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig ETH_CH9120
+	bool "ch9120 ethernet driver"
+	depends on UART_INTERRUPT_DRIVEN
+	select NET_OFFLOAD
+	help
+	  This offloads ethernet driver to ch9120 chip
+
+if ETH_CH9120
+
+endif # ETH_CH9120
