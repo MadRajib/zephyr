@@ -331,12 +331,18 @@ static int ch9120_init(const struct device *dev)
 
 static void ch9120_iface_init(struct net_if *iface)
 {
+    const struct device *dev = net_if_get_device(iface);
+    struct ch9120_runtime *data = dev->data;
+
+    data->iface = iface;
+
     net_if_socket_offload_set(iface, ch9120_socket_create);
+    net_if_flag_set(iface, NET_IF_NO_AUTO_START);
 }
 
 /*---- Device Instance END ----*/
 
-static struct offloaded_if_api api_funcs = {
+static struct offloaded_if_api ch9120_if_apis = {
 	.iface_api.init = ch9120_iface_init,
 };
 
