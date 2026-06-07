@@ -264,6 +264,12 @@ int ch9120_socket_create(int family, int type, int proto)
 /*---- Socket END ----*/
 
 /*---- Device Instance ----*/
+
+static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
+{
+
+}
+
 static int ch9120_init(const struct device *dev)
 {
     int ret;
@@ -278,16 +284,45 @@ static int ch9120_init(const struct device *dev)
 		.flow_ctrl = UART_CFG_FLOW_CTRL_NONE,
 	};
 
+    /* Initialise UART*/
     if (!device_is_ready(cfg->uart_dev)) {
+        LOG_ERR("UART device not ready");
         return -ENODEV;
     }
 
     ret = uart_configure(cfg->uart_dev, &uart_cfg);
 	if (ret < 0) {
-		LOG_ERR("Failed to set UART : %d", ret);
+		LOG_ERR("Failed to configure UART : %d", ret);
 		return ret;
 	}
 
+    ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9130_uart_cb, (void *)dev);
+	if (ret < 0) {
+		LOG_ERR("Couldn't set UART callback");
+		return ret;
+	}
+
+	uart_irq_rx_enable(cfg->uart_dev);
+
+    /* Initialise gpios */
+    if (!gpio_is_ready_dt(&cfg->rst_gpio) ||
+        !gpio_is_ready_dt(&cfg->cfg_gpio) ||
+        !gpio_is_ready_dt(&cfg->tcp_gpio)) {
+        LOG_ERR("GPIOs not ready");
+        return -1;
+    }
+
+    gpio_pin_configure_dt(&cfg->rst_gpio, GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure_dt(&cfg->cfg_gpio, GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT);
+
+    /* Reset CH9120 chip */
+    gpio_pin_set_dt(&cfg->rst_gpio, 1);
+    gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+
+    k_msleep(500);
+    
+    /* Initialise driver state */
     data->sock.in_use = false;
     k_mutex_init(&data->drv_lock);
 
