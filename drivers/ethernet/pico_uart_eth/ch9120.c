@@ -222,14 +222,21 @@ static bool ch9120_socket_is_supported(int family, int type, int proto)
 int ch9120_socket_create(int family, int type, int proto)
 {
     int fd;
+    struct ch9120_socket *sck = &(ch9120_runtime_data.sock);
+    //TODO: check sck ?
+
+    if (sck->in_use) {
+        LOG_ERR("Failed to create socket, already in use");
+        return -1;
+    }
 
     fd = zvfs_reserve_fd();
 	if (fd < 0) {
 		return -1;
 	}
 
-    // zvfs_finalize_typed_fd(fd, sock, &ch9120_socket_fd_op_vtable.fd_vtable, ZVFS_MODE_IFSOCK);
-	(void)ch9120_socket_fd_op_vtable;
+    zvfs_finalize_typed_fd(fd, sck, &ch9120_socket_fd_op_vtable.fd_vtable, ZVFS_MODE_IFSOCK);
+    sck->in_use = true;
 
 	return 0;
 }
@@ -259,8 +266,6 @@ static int ch9120_init(const struct device *dev)
 		LOG_ERR("Failed to set UART : %d", ret);
 		return ret;
 	}
-
-    
 
     return 0;
 }
