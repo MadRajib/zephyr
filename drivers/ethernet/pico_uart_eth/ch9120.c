@@ -14,6 +14,36 @@
 
 LOG_MODULE_REGISTER(eth_ch9120, CONFIG_LOG_DEFAULT_LEVEL);
 
+/* CH9120 binary protocol header bytes */
+#define CH9120_HDR_0            0x57
+#define CH9120_HDR_1            0xAB
+
+/* command codes */
+#define CH9120_CMD_MODE         0x10  /* set mode: TCP_SERVER/CLIENT, UDP_SERVER/CLIENT */
+#define CH9120_CMD_LOCAL_IP     0x11  /* set local IP address */
+#define CH9120_CMD_SUBNET_MASK  0x12  /* set subnet mask */
+#define CH9120_CMD_GATEWAY      0x13  /* set gateway */
+#define CH9120_CMD_LOCAL_PORT   0x14  /* set local port */
+#define CH9120_CMD_TARGET_IP    0x15  /* set target IP */
+#define CH9120_CMD_TARGET_PORT  0x16  /* set target port */
+#define CH9120_CMD_PORT_RANDOM  0x17  /* enable random local port */
+#define CH9120_CMD_BAUD         0x21  /* set UART baud rate */
+
+/* exit config mode sequence */
+#define CH9120_CMD_SAVE         0x0d  /* save config to flash */
+#define CH9120_CMD_RESET        0x0e  /* reset chip */
+#define CH9120_CMD_EXIT         0x5e  /* exit config mode */
+
+/* mode values */
+#define CH9120_MODE_TCP_SERVER  0x00
+#define CH9120_MODE_TCP_CLIENT  0x01
+#define CH9120_MODE_UDP_SERVER  0x02
+#define CH9120_MODE_UDP_CLIENT  0x03
+
+/* baud rates */
+#define CH9120_BAUD_CONFIG      9600
+#define CH9120_BAUD_DATA        115200
+
 enum ch9120_sock_state {
     CH9120_SOCK_CLOSED,
     CH9120_SOCK_OPEN,
@@ -270,9 +300,66 @@ static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 
 }
 
+static void ch9120_send_cmd(const struct device *uart_dev,
+                             uint8_t cmd, const uint8_t *data, size_t len)
+{
+    uint8_t header[3] = { 0x57, 0xAB, cmd };
+
+    /* send header */
+    for (int i = 0; i < 3; i++) {
+        uart_poll_out(uart_dev, header[i]);
+    }
+
+    /* send data bytes */
+    for (size_t i = 0; i < len; i++) {
+        uart_poll_out(uart_dev, data[i]);
+    }
+
+    k_msleep(10);
+}
+
+static void ch9120_config_mode_enter(const struct ch9120_config *cfg)
+{
+    gpio_pin_set_dt(&cfg->rst_gpio, 1);
+    gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+    k_msleep(500);
+}
+
+static void ch9120_config_mode_exit(const struct ch9120_config *cfg)
+{
+    uint8_t save_cmd  = 0x0d;
+    uint8_t reset_cmd = 0x0e;
+    uint8_t exit_cmd  = 0x5e;
+
+    ch9120_send_cmd(cfg->uart_dev, save_cmd,  NULL, 0);
+    k_msleep(200);
+    ch9120_send_cmd(cfg->uart_dev, reset_cmd, NULL, 0);
+    k_msleep(200);
+    ch9120_send_cmd(cfg->uart_dev, exit_cmd,  NULL, 0);
+    k_msleep(200);
+
+    gpio_pin_set_dt(&cfg->cfg_gpio, 1);
+}
+
+static void ch9120_uart_flush(const struct device *uart_dev)
+{
+    uint8_t c;
+
+    while (uart_poll_in(uart_dev, &c) == 0) {
+        /* discard */
+    }
+}
+
+static void parse_ip(const char *str, uint8_t ip[4])
+{
+    sscanf(str, "%hhu.%hhu.%hhu.%hhu",
+           &ip[0], &ip[1], &ip[2], &ip[3]);
+}
+
 static int ch9120_init(const struct device *dev)
 {
     int ret;
+    uint8_t net_addr[4];
     struct ch9120_runtime *data = dev->data;
     const struct ch9120_config *cfg = dev->config;
 
@@ -296,14 +383,6 @@ static int ch9120_init(const struct device *dev)
 		return ret;
 	}
 
-    ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9130_uart_cb, (void *)dev);
-	if (ret < 0) {
-		LOG_ERR("Couldn't set UART callback");
-		return ret;
-	}
-
-	uart_irq_rx_enable(cfg->uart_dev);
-
     /* Initialise gpios */
     if (!gpio_is_ready_dt(&cfg->rst_gpio) ||
         !gpio_is_ready_dt(&cfg->cfg_gpio) ||
@@ -317,11 +396,55 @@ static int ch9120_init(const struct device *dev)
     gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT);
 
     /* Reset CH9120 chip */
-    gpio_pin_set_dt(&cfg->rst_gpio, 1);
-    gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+    ch9120_config_mode_enter(cfg);
 
-    k_msleep(500);
+    uint8_t mode = CH9120_MODE_TCP_CLIENT;
+    ch9120_send_cmd(cfg->uart_dev, CH9120_CMD_MODE, &mode, 1);
+    k_msleep(100);
+
+    memset(net_addr, 0, sizeof(net_addr));
+    parse_ip(CONFIG_ETH_CH9120_LOCAL_IP, net_addr);
+    ch9120_send_cmd(cfg->uart_dev, CH9120_CMD_LOCAL_IP, net_addr, sizeof(net_addr));
+    k_msleep(100);
     
+    memset(net_addr, 0, sizeof(net_addr));
+    parse_ip(CONFIG_ETH_CH9120_SUBNET_MASK, net_addr);
+    ch9120_send_cmd(cfg->uart_dev, CH9120_CMD_SUBNET_MASK, net_addr, sizeof(net_addr));
+    k_msleep(100);
+
+    memset(net_addr, 0, sizeof(net_addr));
+    parse_ip(CONFIG_ETH_CH9120_GATEWAY, net_addr);
+    ch9120_send_cmd(cfg->uart_dev, CH9120_CMD_GATEWAY, net_addr, sizeof(net_addr));
+    k_msleep(100);
+
+    uint32_t baud = 115200;
+    uint8_t  baud_bytes[4] = {
+        baud & 0xff,
+        (baud >> 8)  & 0xff,
+        (baud >> 16) & 0xff,
+        (baud >> 24) & 0xff,
+    };
+    ch9120_send_cmd(cfg->uart_dev, CH9120_CMD_BAUD, baud_bytes, 4);
+    k_msleep(100);
+
+    ch9120_config_mode_exit(cfg);
+
+    ch9120_uart_flush(cfg->uart_dev);
+
+    uart_cfg.baudrate = 115200;
+    ret = uart_configure(cfg->uart_dev, &uart_cfg);
+	if (ret < 0) {
+		LOG_ERR("Failed to configure UART : %d", ret);
+		return ret;
+	}
+
+    ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9130_uart_cb, (void *)dev);
+	if (ret < 0) {
+		LOG_ERR("Couldn't set UART callback");
+		return ret;
+	}
+	uart_irq_rx_enable(cfg->uart_dev);
+
     /* Initialise driver state */
     data->sock.in_use = false;
     k_mutex_init(&data->drv_lock);
