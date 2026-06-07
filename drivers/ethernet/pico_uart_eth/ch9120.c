@@ -222,23 +222,43 @@ static bool ch9120_socket_is_supported(int family, int type, int proto)
 int ch9120_socket_create(int family, int type, int proto)
 {
     int fd;
-    struct ch9120_socket *sck = &(ch9120_runtime_data.sock);
+    struct ch9120_socket *sck = &ch9120_runtime_data.sock;
     //TODO: check sck ?
 
+    k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
+
     if (sck->in_use) {
+        k_mutex_unlock(&ch9120_runtime_data.drv_lock);
         LOG_ERR("Failed to create socket, already in use");
         return -1;
     }
 
+    sck->in_use = true;
+
+    k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+
+    sck->family = family;
+    sck->type = type;
+    sck->proto = proto;
+    sck->state = CH9120_SOCK_OPEN;
+    sck->is_nonblocking = false;
+    
+    k_mutex_init(&sck->lock);
+    k_sem_init(&sck->rx_sem, 0, 1);
+    k_sem_init(&sck->connect_sem, 0, 1);
+    ring_buf_init(&sck->rx_buf, sizeof(sck->rx_buf_data), sck->rx_buf_data);
+
     fd = zvfs_reserve_fd();
 	if (fd < 0) {
+        sck->in_use = false;
 		return -1;
 	}
 
-    zvfs_finalize_typed_fd(fd, sck, &ch9120_socket_fd_op_vtable.fd_vtable, ZVFS_MODE_IFSOCK);
-    sck->in_use = true;
+    zvfs_finalize_typed_fd(fd, sck,
+                            (const struct fd_op_vtable *)&ch9120_socket_fd_op_vtable.fd_vtable,
+                            ZVFS_MODE_IFSOCK);
 
-	return 0;
+	return fd;
 }
 
 /*---- Socket END ----*/
@@ -247,6 +267,7 @@ int ch9120_socket_create(int family, int type, int proto)
 static int ch9120_init(const struct device *dev)
 {
     int ret;
+    struct ch9120_runtime *data = dev->data;
     const struct ch9120_config *cfg = dev->config;
 
     struct uart_config uart_cfg = {
@@ -266,6 +287,9 @@ static int ch9120_init(const struct device *dev)
 		LOG_ERR("Failed to set UART : %d", ret);
 		return ret;
 	}
+
+    data->sock.in_use = false;
+    k_mutex_init(&data->drv_lock);
 
     return 0;
 }
