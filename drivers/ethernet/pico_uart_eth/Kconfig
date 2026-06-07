@@ -4,8 +4,9 @@
 
 menuconfig ETH_CH9120
 	bool "ch9120 ethernet driver"
+	depends on DT_HAS_WCH_CH9120_ENABLED
 	depends on UART_INTERRUPT_DRIVEN
-	select NET_OFFLOAD
+	select NET_SOCKETS_OFFLOAD
 	help
 	  This offloads ethernet driver to ch9120 chip
 
