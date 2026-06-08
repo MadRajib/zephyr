@@ -12,7 +12,7 @@
 #define CH9120_NODE DT_INST(0, wch_ch9120)
 #define CH9120_RX_BUF_SIZE 1024
 
-LOG_MODULE_REGISTER(eth_ch9120, CONFIG_LOG_DEFAULT_LEVEL);
+LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 
 /* CH9120 binary protocol header bytes */
 #define CH9120_HDR_0            0x57
@@ -44,6 +44,9 @@ LOG_MODULE_REGISTER(eth_ch9120, CONFIG_LOG_DEFAULT_LEVEL);
 /* baud rates */
 #define CH9120_BAUD_CONFIG      9600
 #define CH9120_BAUD_DATA        115200
+
+#define CH9120_UART_PRE_DELAY   30
+#define CH9120_UART_PRE_DELAY   50
 
 enum ch9120_sock_state {
     CH9120_SOCK_CLOSED,
@@ -319,31 +322,51 @@ static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 //     k_msleep(10);
 // }
 
+static void ch9120_uart_flush(const struct device *uart_dev)
+{
+    uint8_t c;
+
+    while (uart_fifo_read(uart_dev, &c, 1) > 0) {
+        /* discard */
+    }
+}
+
 static int ch9120_send_cmd_and_wait_ack(const struct device *uart_dev, 
-                                        uint8_t cmd, const uint8_t *data, size_t len)
+                                        uint8_t cmd, const uint8_t *data, size_t len,
+                                        const uint16_t pre_delay, const uint16_t timeout)
 {
     uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
     uint8_t ack;
     int ret;
 
-    /* 1. Send Header */
+    ch9120_uart_flush(uart_dev);
+
     for (int i = 0; i < 3; i++) {
         uart_poll_out(uart_dev, header[i]);
     }
 
-    /* 2. Send Data (if any) */
     for (size_t i = 0; i < len; i++) {
         uart_poll_out(uart_dev, data[i]);
     }
 
-    /* 3. Wait for 0xAA Acknowledgment from CH9120 */
-    /* We use a simple polling loop with a timeout for configuration */
-    for (int timeout = 0; timeout < 100; timeout++) {
+    if (pre_delay) {
+        k_msleep(pre_delay);
+    }
+
+    /* Wait for 0xAA Acknowledgment from CH9120 */
+    for (int t = 0; t < timeout; t++) {
         ret = uart_poll_in(uart_dev, &ack);
-        if (ret == 0 && ack == 0xAA) {
-            return 0; /* Success! Command acknowledged. */
+        if (ret == 0) {
+            if (ack == 0xAA) {
+                return 0;   /* Success! Command acknowledged. */
+            }
+
+            if (ack == 0xEE) {
+                LOG_ERR("CH9120 rejected command 0x%02x", cmd);
+                return -EPROTO;
+            }
         }
-        k_msleep(1);
+        k_msleep(10);
     }
 
     LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
@@ -372,15 +395,6 @@ static int ch9120_send_cmd_and_wait_ack(const struct device *uart_dev,
 //     gpio_pin_set_dt(&cfg->cfg_gpio, 1);
 // }
 
-static void ch9120_uart_flush(const struct device *uart_dev)
-{
-    uint8_t c;
-
-    while (uart_poll_in(uart_dev, &c) == 0) {
-        /* discard */
-    }
-}
-
 // static void parse_ip(const char *str, uint8_t ip[4])
 // {
 //     sscanf(str, "%hhu.%hhu.%hhu.%hhu",
@@ -401,17 +415,23 @@ static int ch9120_init(const struct device *dev)
 		.flow_ctrl = UART_CFG_FLOW_CTRL_NONE,
 	};
 
+    k_msleep(1000);
+
     /* Initialise UART*/
     if (!device_is_ready(cfg->uart_dev)) {
         LOG_ERR("UART device not ready");
         return -ENODEV;
     }
 
+    LOG_INF("uart: device is ready");
+
     ret = uart_configure(cfg->uart_dev, &uart_cfg);
 	if (ret < 0) {
 		LOG_ERR("Failed to configure UART : %d", ret);
 		return ret;
 	}
+
+    LOG_INF("uart: configured ");
 
     /* Initialise gpios */
     if (!gpio_is_ready_dt(&cfg->rst_gpio) ||
@@ -426,18 +446,15 @@ static int ch9120_init(const struct device *dev)
     gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT);
 
     /* Enter config mode */
-    gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-    k_msleep(100);
+    gpio_pin_set_dt(&cfg->rst_gpio, 0);
+    gpio_pin_set_dt(&cfg->cfg_gpio, 1);
 
-    uint8_t mode = CH9120_MODE_TCP_CLIENT;
-    ret = ch9120_send_cmd_and_wait_ack(cfg->uart_dev, CH9120_CMD_MODE, &mode, 1);
-    if (ret < 0) {
-        LOG_ERR("Failed to set tcp client mode error:%d", ret);
-        return -EIO;
-    }
+    k_msleep(500);
 
     uint8_t dhcp_enable = 0x01;
-    ret = ch9120_send_cmd_and_wait_ack(cfg->uart_dev, CH9120_CMD_DHCP, &dhcp_enable, 1);
+    ret = ch9120_send_cmd_and_wait_ack(cfg->uart_dev, CH9120_CMD_DHCP,
+                                        &dhcp_enable, 1,
+                                        CH9120_UART_PRE_DELAY, 1000);
     if (ret < 0) {
         LOG_ERR("Failed to set dhcp:%d", ret);
         return -EIO;
@@ -450,21 +467,30 @@ static int ch9120_init(const struct device *dev)
         (baud >> 16) & 0xff,
         (baud >> 24) & 0xff,
     };
-    ret = ch9120_send_cmd_and_wait_ack(cfg->uart_dev, CH9120_CMD_BAUD, baud_bytes, 4);
+
+    ret = ch9120_send_cmd_and_wait_ack(cfg->uart_dev, CH9120_CMD_BAUD,
+                                        baud_bytes, 4,
+                                        CH9120_UART_PRE_DELAY, 1000);
     if (ret < 0) {
         LOG_ERR("Failed to set BAUD Rate :%d", ret);
         return -EIO;
     }
 
-    ch9120_send_cmd_and_wait_ack(cfg->uart_dev, CH9120_CMD_SAVE, NULL, 0);
+    ret = ch9120_send_cmd_and_wait_ack(cfg->uart_dev, CH9120_CMD_SAVE,
+                                NULL, 0,
+                                CH9120_UART_PRE_DELAY, 1000);
+    if (ret < 0) {
+        LOG_ERR("Failed to save config :%d", ret);
+        return -EIO;
+    }
 
     /* Exit config mode */
-    gpio_pin_set_dt(&cfg->cfg_gpio, 1);
+    gpio_pin_set_dt(&cfg->cfg_gpio, 0);
 
     /* Hardware reset the CH9120 to apply new baud rate and DHCP */
-    gpio_pin_set_dt(&cfg->rst_gpio, 0);
-    k_msleep(50);
     gpio_pin_set_dt(&cfg->rst_gpio, 1);
+    k_msleep(50);
+    gpio_pin_set_dt(&cfg->rst_gpio, 0);
 
     /* Wait for the chip to boot up */
     k_msleep(500);

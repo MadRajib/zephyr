@@ -1,0 +1,8 @@
+tests:
+  drivers.ethernet.ch9120.init:
+    tags:
+      - drivers
+      - ethernet
+    platform_allow:
+      - rpi_pico2/rp2350a/m33
+    build_only: true
