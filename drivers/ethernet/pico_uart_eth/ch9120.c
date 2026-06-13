@@ -15,96 +15,96 @@
 LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 
 /* CH9120 binary protocol header bytes */
-#define CH9120_HDR_0            0x57
-#define CH9120_HDR_1            0xAB
+#define CH9120_HDR_0			0x57
+#define CH9120_HDR_1			0xAB
 
 /* command codes */
-#define CH9120_CMD_MODE             0x10
-#define CH9120_CMD_LOCAL_IP         0x11
-#define CH9120_CMD_SUBNET_MASK      0x12
-#define CH9120_CMD_GATEWAY          0x13
-#define CH9120_CMD_LOCAL_PORT       0x14
-#define CH9120_CMD_TARGET_IP        0x15
-#define CH9120_CMD_TARGET_PORT      0x16
-#define CH9120_CMD_PORT_RANDOM      0x17
-#define CH9120_CMD_BAUD             0x21
-#define CH9120_CMD_SET_DISCONNECT   0x24
-#define CH9120_CMD_DHCP             0x33
-#define CH9120_CMD_GET_DISCONNECT   0x74
+#define CH9120_CMD_MODE				0x10
+#define CH9120_CMD_LOCAL_IP			0x11
+#define CH9120_CMD_SUBNET_MASK		0x12
+#define CH9120_CMD_GATEWAY			0x13
+#define CH9120_CMD_LOCAL_PORT		0x14
+#define CH9120_CMD_TARGET_IP		0x15
+#define CH9120_CMD_TARGET_PORT		0x16
+#define CH9120_CMD_PORT_RANDOM		0x17
+#define CH9120_CMD_BAUD				0x21
+#define CH9120_CMD_SET_DISCONNECT	0x24
+#define CH9120_CMD_DHCP				0x33
+#define CH9120_CMD_GET_DISCONNECT	0x74
 
 /* exit config mode sequence */
-#define CH9120_CMD_SAVE         0x0d
-#define CH9120_CMD_RESET        0x0e
-#define CH9120_CMD_EXIT         0x5e
+#define CH9120_CMD_SAVE			0x0d
+#define CH9120_CMD_RESET		0x0e
+#define CH9120_CMD_EXIT			0x5e
 
 /* mode values */
-#define CH9120_MODE_TCP_SERVER  0x00
-#define CH9120_MODE_TCP_CLIENT  0x01
-#define CH9120_MODE_UDP_SERVER  0x02
-#define CH9120_MODE_UDP_CLIENT  0x03
+#define CH9120_MODE_TCP_SERVER	0x00
+#define CH9120_MODE_TCP_CLIENT	0x01
+#define CH9120_MODE_UDP_SERVER	0x02
+#define CH9120_MODE_UDP_CLIENT	0x03
 
 /* baud rates */
-#define CH9120_BAUD_CONFIG      9600
-#define CH9120_BAUD_DATA        115200
+#define CH9120_BAUD_CONFIG		9600
+#define CH9120_BAUD_DATA		115200
 
-#define CH9120_UART_PRE_DELAY   30
-#define CH9120_UART_PRE_DELAY   50
+#define CH9120_UART_PRE_DELAY	30
+#define CH9120_UART_PRE_DELAY	50
 
 enum ch9120_sock_state {
-    CH9120_SOCK_CLOSED,
-    CH9120_SOCK_OPEN,
-    CH9120_SOCK_CONNECTING,
-    CH9120_SOCK_CONNECTED,
-    CH9120_SOCK_ERROR,
+	CH9120_SOCK_CLOSED,
+	CH9120_SOCK_OPEN,
+	CH9120_SOCK_CONNECTING,
+	CH9120_SOCK_CONNECTED,
+	CH9120_SOCK_ERROR,
 };
 
 struct ch9120_socket {
-    bool in_use;
+	bool in_use;
 
-    int type;
-    int proto;
-    int family;
-    enum ch9120_sock_state state;
+	int type;
+	int proto;
+	int family;
+	enum ch9120_sock_state state;
 
-    struct sockaddr remote_addr;
-    struct ring_buf rx_buf;
-    uint8_t rx_buf_data[CH9120_RX_BUF_SIZE];
-    struct k_sem rx_sem;
+	struct sockaddr remote_addr;
+	struct ring_buf rx_buf;
+	uint8_t rx_buf_data[CH9120_RX_BUF_SIZE];
+	struct k_sem rx_sem;
 
-    struct k_mutex lock;
-    struct k_sem connect_sem;
+	struct k_mutex lock;
+	struct k_sem connect_sem;
 
-    bool is_nonblocking;
+	bool is_nonblocking;
 };
 
 struct ch9120_runtime {
 
-    struct net_if *iface;
+	struct net_if *iface;
 
-    struct ch9120_socket sock;
-    struct k_mutex drv_lock;
-    struct k_thread rx_thread;
+	struct ch9120_socket sock;
+	struct k_mutex drv_lock;
+	struct k_thread rx_thread;
 
-    k_thread_stack_t *rx_stack;
+	k_thread_stack_t *rx_stack;
 };
 
 struct ch9120_config {
-    struct gpio_dt_spec cfg_gpio;
-    struct gpio_dt_spec rst_gpio;
-    struct gpio_dt_spec tcp_gpio;
+	struct gpio_dt_spec cfg_gpio;
+	struct gpio_dt_spec rst_gpio;
+	struct gpio_dt_spec tcp_gpio;
 
-    const struct device *uart_dev;
+	const struct device *uart_dev;
 };
 
 static struct ch9120_runtime ch9120_runtime_data;
+
 static const struct ch9120_config ch9120_config_data = {
-    .uart_dev  = DEVICE_DT_GET(DT_PROP(CH9120_NODE, uart)),
-    .cfg_gpio  = GPIO_DT_SPEC_INST_GET(0, config_gpios),
-    .rst_gpio  = GPIO_DT_SPEC_INST_GET(0, reset_gpios),
-    .tcp_gpio  = GPIO_DT_SPEC_INST_GET(0, tcpcs_gpios),
+	.uart_dev  = DEVICE_DT_GET(DT_PROP(CH9120_NODE, uart)),
+	.cfg_gpio  = GPIO_DT_SPEC_INST_GET(0, config_gpios),
+	.rst_gpio  = GPIO_DT_SPEC_INST_GET(0, reset_gpios),
+	.tcp_gpio  = GPIO_DT_SPEC_INST_GET(0, tcpcs_gpios),
 };
 
-/*---- Socket ----*/
 static const struct socket_op_vtable ch9120_socket_fd_op_vtable;
 
 static ssize_t ch9120_read(void *obj, void *buf, size_t sz)
@@ -119,38 +119,39 @@ static ssize_t ch9120_write(void *obj, const void *buf, size_t sz)
 
 static int ch9120_close(void *obj)
 {
-    struct ch9120_socket *sck = (struct ch9120_socket *)obj;
-    if (sck == NULL) {
-        LOG_ERR("%s: invalid socket received",__func__);
-        return -1;
-    }
+	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
 
-    k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
-    if (!sck->in_use) {
-        k_mutex_unlock(&ch9120_runtime_data.drv_lock);
-        return -1;
-    }
+	if (sck == NULL) {
+		LOG_ERR("%s: invalid socket received", __func__);
+		return -1;
+	}
 
-    sck->in_use = false;
-    sck->state = CH9120_SOCK_CLOSED;
+	k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
+	if (!sck->in_use) {
+		k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+		return -1;
+	}
 
-    ring_buf_reset(&sck->rx_buf);
-    k_sem_reset(&sck->rx_sem);
-    k_sem_reset(&sck->connect_sem);
+	sck->in_use = false;
+	sck->state = CH9120_SOCK_CLOSED;
 
-    k_mutex_unlock(&ch9120_runtime_data.drv_lock);
-    
-    return 0;
+	ring_buf_reset(&sck->rx_buf);
+	k_sem_reset(&sck->rx_sem);
+	k_sem_reset(&sck->connect_sem);
+
+	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+
+	return 0;
 }
 
 static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
 {
-    return 0;
+	return 0;
 }
 
 static int ch9120_bind(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
 {
-    return 0;
+	return 0;
 }
 
 static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
@@ -180,7 +181,7 @@ static ssize_t ch9120_sendmsg(void *obj, const struct net_msghdr *msg, int flags
 }
 
 static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
-			     struct net_sockaddr *addr, net_socklen_t *addrlen)
+				 struct net_sockaddr *addr, net_socklen_t *addrlen)
 {
 	return 0;
 }
@@ -254,63 +255,63 @@ static int socket_proto_is_supported(int proto)
 
 static bool ch9120_socket_is_supported(int family, int type, int proto)
 {
-    int ret;
-    
-    ret = socket_family_is_supported(family);
-    if (ret < 0) {
-        return false;
-    }
+	int ret;
 
-    ret = socket_type_is_supported(type);
-    if (ret < 0) {
-        return false;
-    }
+	ret = socket_family_is_supported(family);
+	if (ret < 0) {
+		return false;
+	}
 
-    ret = socket_proto_is_supported(proto);
-    if (ret < 0) {
-        return false;
-    }
+	ret = socket_type_is_supported(type);
+	if (ret < 0) {
+		return false;
+	}
+
+	ret = socket_proto_is_supported(proto);
+	if (ret < 0) {
+		return false;
+	}
 
 	return true;
 }
 
 int ch9120_socket_create(int family, int type, int proto)
 {
-    int fd;
-    struct ch9120_socket *sck = &ch9120_runtime_data.sock;
-    //TODO: check sck ?
+	int fd;
+	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
+	/* TODO: check sck ? */
 
-    k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
+	k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
 
-    if (sck->in_use) {
-        k_mutex_unlock(&ch9120_runtime_data.drv_lock);
-        LOG_ERR("Failed to create socket, already in use");
-        return -1;
-    }
-
-    sck->in_use = true;
-
-    k_mutex_unlock(&ch9120_runtime_data.drv_lock);
-
-    sck->family = family;
-    sck->type = type;
-    sck->proto = proto;
-    sck->state = CH9120_SOCK_OPEN;
-    sck->is_nonblocking = false;
-
-    fd = zvfs_reserve_fd();
-	if (fd < 0) {
-        k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
-        sck->in_use = false;
-        k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+	if (sck->in_use) {
+		k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+		LOG_ERR("Failed to create socket, already in use");
 		return -1;
 	}
 
-    zvfs_finalize_typed_fd(fd, sck,
-                        (const struct fd_op_vtable *)&ch9120_socket_fd_op_vtable.fd_vtable,
-                        ZVFS_MODE_IFSOCK);
+	sck->in_use = true;
 
-    LOG_DBG("socket created fd:%d", fd);
+	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+
+	sck->family = family;
+	sck->type = type;
+	sck->proto = proto;
+	sck->state = CH9120_SOCK_OPEN;
+	sck->is_nonblocking = false;
+
+	fd = zvfs_reserve_fd();
+	if (fd < 0) {
+		k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
+		sck->in_use = false;
+		k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+		return -1;
+	}
+
+	zvfs_finalize_typed_fd(fd, sck,
+			(const struct fd_op_vtable *)&ch9120_socket_fd_op_vtable.fd_vtable,
+			ZVFS_MODE_IFSOCK);
+
+	LOG_DBG("socket created fd:%d", fd);
 	return fd;
 }
 
@@ -321,69 +322,70 @@ static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 
 static void ch9120_uart_flush(const struct device *uart_dev)
 {
-    uint8_t c;
+	uint8_t c;
 
-    while (uart_fifo_read(uart_dev, &c, 1) > 0) {
-        /* discard */
-    }
+	while (uart_fifo_read(uart_dev, &c, 1) > 0) {
+		/* discard */
+	}
 }
 
-static int ch9120_send_cmd_wait(const struct ch9120_config *cfg, 
-                                uint8_t cmd, const uint8_t *data, size_t len,
-                                const uint16_t pre_delay, const uint16_t timeout)
+static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
+				uint8_t cmd, const uint8_t *data, size_t len,
+				const uint16_t pre_delay, const uint16_t timeout)
 {
-    uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
-    const struct device *uart_dev = cfg->uart_dev;
-    uint8_t ack;
-    int ret;
+	uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
+	const struct device *uart_dev = cfg->uart_dev;
+	uint8_t ack;
+	int ret;
 
-    /* Enter config mode */
-    gpio_pin_set_dt(&cfg->cfg_gpio, 1);
-    
-    ch9120_uart_flush(uart_dev);
+	/* Enter config mode */
+	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
 
-    for (int i = 0; i < 3; i++) {
-        uart_poll_out(uart_dev, header[i]);
-    }
+	ch9120_uart_flush(uart_dev);
 
-    for (size_t i = 0; i < len; i++) {
-        uart_poll_out(uart_dev, data[i]);
-    }
+	for (int i = 0; i < 3; i++) {
+		uart_poll_out(uart_dev, header[i]);
+	}
 
-    if (pre_delay) {
-        k_msleep(pre_delay);
-    }
+	for (size_t i = 0; i < len; i++) {
+		uart_poll_out(uart_dev, data[i]);
+	}
 
-    /* Wait for 0xAA Acknowledgment from CH9120 */
-    for (int t = 0; t < timeout; t++) {
-        ret = uart_poll_in(uart_dev, &ack);
-        if (ret == 0) {
-            if (ack == 0xAA) {
-                gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-                return 0;
-            }
+	if (pre_delay) {
+		k_msleep(pre_delay);
+	}
 
-            if (ack == 0xEE) {
-                LOG_ERR("CH9120 rejected command 0x%02x", cmd);
-                gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-                return -EPROTO;
-            }
-        }
-        k_msleep(10);
-    }
+	/* Wait for 0xAA Acknowledgment from CH9120 */
+	for (int t = 0; t < timeout; t++) {
+		ret = uart_poll_in(uart_dev, &ack);
+		if (ret == 0) {
+			if (ack == 0xAA) {
+				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+				return 0;
+			}
 
-    LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
-    gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-    return -EIO;
+			if (ack == 0xEE) {
+				LOG_ERR("CH9120 rejected command 0x%02x", cmd);
+				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+				return -EPROTO;
+			}
+		}
+		k_msleep(10);
+	}
+
+	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
+	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+
+	return -EIO;
 }
 
 static int ch9120_init(const struct device *dev)
 {
-    int ret;
-    struct ch9120_runtime *data = dev->data;
-    const struct ch9120_config *cfg = dev->config;
+	int ret;
+	struct ch9120_runtime *data = dev->data;
+	const struct ch9120_config *cfg = dev->config;
 
-    struct uart_config uart_cfg = {
+	struct uart_config uart_cfg = {
 		.baudrate = CH9120_BAUD_CONFIG,
 		.parity = UART_CFG_PARITY_NONE,
 		.stop_bits = UART_CFG_STOP_BITS_1,
@@ -391,110 +393,111 @@ static int ch9120_init(const struct device *dev)
 		.flow_ctrl = UART_CFG_FLOW_CTRL_NONE,
 	};
 
-    k_msleep(1000);
+	k_msleep(1000);
 
-    /* Initialise UART*/
-    if (!device_is_ready(cfg->uart_dev)) {
-        LOG_ERR("UART device not ready");
-        return -ENODEV;
-    }
+	/* Initialise UART*/
+	if (!device_is_ready(cfg->uart_dev)) {
+		LOG_ERR("UART device not ready");
+		return -ENODEV;
+	}
 
-    LOG_INF("uart: device is ready");
+	LOG_INF("uart: device is ready");
 
-    ret = uart_configure(cfg->uart_dev, &uart_cfg);
+	ret = uart_configure(cfg->uart_dev, &uart_cfg);
 	if (ret < 0) {
 		LOG_ERR("Failed to configure UART : %d", ret);
 		return ret;
 	}
 
-    LOG_INF("uart: configured ");
+	LOG_INF("uart: configured ");
 
-    /* Initialise gpios */
-    if (!gpio_is_ready_dt(&cfg->rst_gpio) ||
-        !gpio_is_ready_dt(&cfg->cfg_gpio) ||
-        !gpio_is_ready_dt(&cfg->tcp_gpio)) {
-        LOG_ERR("GPIOs not ready");
-        return -1;
-    }
+	/* Initialise gpios */
+	if (!gpio_is_ready_dt(&cfg->rst_gpio) ||
+		!gpio_is_ready_dt(&cfg->cfg_gpio) ||
+		!gpio_is_ready_dt(&cfg->tcp_gpio)) {
 
-    gpio_pin_configure_dt(&cfg->rst_gpio, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure_dt(&cfg->cfg_gpio, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT);
+		LOG_ERR("GPIOs not ready");
+		return -1;
+	}
 
-    /* Initialize the Chip */
-    gpio_pin_set_dt(&cfg->rst_gpio, 1);
-    k_msleep(10);
-    gpio_pin_set_dt(&cfg->rst_gpio, 0);
-    k_msleep(500);
+	gpio_pin_configure_dt(&cfg->rst_gpio, GPIO_OUTPUT_INACTIVE);
+	gpio_pin_configure_dt(&cfg->cfg_gpio, GPIO_OUTPUT_INACTIVE);
+	gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT);
 
-    uint8_t dhcp_enable = 0x01;
-    ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_DHCP,
-                                        &dhcp_enable, 1,
-                                        CH9120_UART_PRE_DELAY, 1000);
-    if (ret < 0) {
-        LOG_ERR("Failed to set dhcp:%d", ret);
-        return -EIO;
-    }
-    k_msleep(500);
+	/* Initialize the Chip */
+	gpio_pin_set_dt(&cfg->rst_gpio, 1);
+	k_msleep(10);
+	gpio_pin_set_dt(&cfg->rst_gpio, 0);
+	k_msleep(500);
 
-    uint8_t disconnect_enable = 0x01;
-    ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DISCONNECT,
-                                        &disconnect_enable, 1,
-                                        CH9120_UART_PRE_DELAY, 1000);
-    if (ret < 0) {
-        LOG_ERR("Failed to set rj45 disconnect enable :%d", ret);
-        return -EIO;
-    }
-    k_msleep(500);
+	uint8_t dhcp_enable = 0x01;
 
-    ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE,
-                                NULL, 0,
-                                CH9120_UART_PRE_DELAY, 1000);
-    if (ret < 0) {
-        LOG_ERR("Failed to save config :%d", ret);
-        return -EIO;
-    }
-    k_msleep(500);
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_DHCP,
+					&dhcp_enable, 1,
+					CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to set dhcp:%d", ret);
+		return -EIO;
+	}
+	k_msleep(500);
 
-    ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
-                                NULL, 0,
-                                CH9120_UART_PRE_DELAY, 1000);
-    if (ret < 0) {
-        LOG_ERR("Failed to save config :%d", ret);
-        return -EIO;
-    }
-    k_msleep(1000);
-    
-    ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9130_uart_cb, (void *)dev);
+	uint8_t disconnect_enable = 0x01;
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DISCONNECT,
+					&disconnect_enable, 1,
+					CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to set rj45 disconnect enable :%d", ret);
+		return -EIO;
+	}
+	k_msleep(500);
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE,
+				NULL, 0,
+				CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+		return -EIO;
+	}
+	k_msleep(500);
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
+				NULL, 0,
+				CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+		return -EIO;
+	}
+	k_msleep(1000);
+
+	ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9130_uart_cb, (void *)dev);
 	if (ret < 0) {
 		LOG_ERR("Couldn't set UART callback");
 		return ret;
 	}
 	uart_irq_rx_enable(cfg->uart_dev);
 
-    /* Initialise driver state */
-    data->sock.in_use = false;
-    k_mutex_init(&data->drv_lock);
+	/* Initialise driver state */
+	data->sock.in_use = false;
+	k_mutex_init(&data->drv_lock);
 
-    k_mutex_init(&(data->sock.lock));
-    k_sem_init(&(data->sock.rx_sem), 0, 1);
-    k_sem_init(&(data->sock.connect_sem), 0, 1);
-    ring_buf_init(&(data->sock.rx_buf), sizeof(data->sock.rx_buf_data), data->sock.rx_buf_data);
+	k_mutex_init(&(data->sock.lock));
+	k_sem_init(&(data->sock.rx_sem), 0, 1);
+	k_sem_init(&(data->sock.connect_sem), 0, 1);
+	ring_buf_init(&(data->sock.rx_buf), sizeof(data->sock.rx_buf_data), data->sock.rx_buf_data);
 
-    LOG_INF("CH9120 Initialized Successfully with DHCP");
+	LOG_INF("CH9120 Initialized Successfully with DHCP");
 
-    return 0;
+	return 0;
 }
 
 static void ch9120_iface_init(struct net_if *iface)
 {
-    LOG_INF("called: %s",__func__);
-    LOG_INF("called: %s",__func__);
-    const struct device *dev = net_if_get_device(iface);
-    struct ch9120_runtime *data = dev->data;
+	const struct device *dev = net_if_get_device(iface);
+	struct ch9120_runtime *data = dev->data;
 
-    data->iface = iface;
-    net_if_socket_offload_set(iface, ch9120_socket_create);
+	data->iface = iface;
+	net_if_socket_offload_set(iface, ch9120_socket_create);
 }
 
 static struct offloaded_if_api ch9120_if_apis = {
@@ -523,19 +526,19 @@ static const struct socket_op_vtable ch9120_socket_fd_op_vtable = {
 };
 
 NET_DEVICE_DT_INST_OFFLOAD_DEFINE(
-    0,
-    ch9120_init,
-    NULL,
-    &ch9120_runtime_data,
-    &ch9120_config_data,
-    CONFIG_ETH_INIT_PRIORITY,
-    &ch9120_if_apis,
-    NET_ETH_MTU
+	0,
+	ch9120_init,
+	NULL,
+	&ch9120_runtime_data,
+	&ch9120_config_data,
+	CONFIG_ETH_INIT_PRIORITY,
+	&ch9120_if_apis,
+	NET_ETH_MTU
 );
 
 NET_SOCKET_OFFLOAD_REGISTER(
-    ch9120,
-    CONFIG_NET_SOCKETS_OFFLOAD_PRIORITY,
-    AF_UNSPEC,
+	ch9120,
+	CONFIG_NET_SOCKETS_OFFLOAD_PRIORITY,
+	AF_UNSPEC,
 	ch9120_socket_is_supported,
-    ch9120_socket_create);
+	ch9120_socket_create);
