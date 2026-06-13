@@ -140,7 +140,7 @@ static int ch9120_close(void *obj)
 	k_sem_reset(&sck->connect_sem);
 
 	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
-
+	LOG_DBG("socket closed");
 	return 0;
 }
 
@@ -511,14 +511,14 @@ static const struct socket_op_vtable ch9120_socket_fd_op_vtable = {
 		.close = ch9120_close,
 		.ioctl = ch9120_ioctl,
 	},
-	.bind = ch9120_bind,
+	.bind = NULL,
 	.connect = ch9120_connect,
-	.listen = ch9120_listen,
-	.accept = ch9120_accept,
+	.listen = NULL,
+	.accept = NULL,
 	.sendto = ch9120_sendto,
-	.sendmsg = ch9120_sendmsg,
+	.sendmsg = NULL,
 	.recvfrom = ch9120_recvfrom,
-	.recvmsg = ch9120_recvmsg,
+	.recvmsg = NULL,
 	.getsockopt = ch9120_getsockopt,
 	.setsockopt = ch9120_setsockopt,
 	.getpeername = ch9120_getpeername,
