@@ -9,9 +9,10 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 int main(void)
 {
     LOG_INF("Starting CH9120 Quick Test!");
-    k_sleep(K_SECONDS(5));
+    
 
     /* Stage 1 — check device */
+    LOG_INF("\nCH9120 ========== Stage 1 =====================\n");
     const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(ch9120_eth0));
     if (!device_is_ready(dev)) {
         LOG_ERR("CH9120 device not ready");
@@ -20,14 +21,18 @@ int main(void)
     LOG_INF("CH9120 device ready");
 
     /* Stage 2 — check net_if */
+    LOG_INF("\nCH9120 ========== Stage 2 =====================\n");
     struct net_if *iface = net_if_get_default();
     if (!iface) {
         LOG_ERR("No network interface found");
         return -1;
     }
     LOG_INF("Network interface found");
+    
+    k_sleep(K_SECONDS(5));
 
     /* Stage 3 — open socket */
+    LOG_INF("\nCH9120 ========== Stage 3 =====================\n");
     int fd = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) {
         LOG_ERR("socket() failed errno=%d", errno);
@@ -35,11 +40,21 @@ int main(void)
     }
     LOG_INF("socket() created fd=%d", fd);
 
-    /* Stage 4 — close socket */
     zsock_close(fd);
     LOG_INF("socket closed");
 
-    /* Stage 5 — verify only one socket at a time */
+
+    fd = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) {
+        LOG_ERR("socket() failed errno=%d", errno);
+        return -1;
+    }
+    LOG_INF("socket() created fd=%d", fd);
+    zsock_close(fd);
+    LOG_INF("socket closed");
+
+    LOG_INF("\nCH9120 ========== Stage 4 =====================\n");
+
     int fd1 = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     int fd2 = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
