@@ -119,6 +119,27 @@ static ssize_t ch9120_write(void *obj, const void *buf, size_t sz)
 
 static int ch9120_close(void *obj)
 {
+    struct ch9120_socket *sck = (struct ch9120_socket *)obj;
+    if (sck == NULL) {
+        LOG_ERR("%s: invalid socket received",__func__);
+        return -1;
+    }
+
+    k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
+    if (!sck->in_use) {
+        k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+        return -1;
+    }
+
+    sck->in_use = false;
+    sck->state = CH9120_SOCK_CLOSED;
+
+    ring_buf_reset(&sck->rx_buf);
+    k_sem_reset(&sck->rx_sem);
+    k_sem_reset(&sck->connect_sem);
+
+    k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+    
     return 0;
 }
 
@@ -191,10 +212,8 @@ static int ch9120_getsockname(void *obj, struct net_sockaddr *addr, net_socklen_
 	return 0;
 }
 
-// Utils
 static int socket_family_is_supported(int family)
 {
-    LOG_INF("called: %s",__func__);
 	switch (family) {
 	case NET_AF_INET:
 		break;
@@ -207,7 +226,6 @@ static int socket_family_is_supported(int family)
 
 static int socket_type_is_supported(int type)
 {
-    LOG_INF("called: %s",__func__);
 	switch (type) {
 	case NET_SOCK_STREAM:
 		break;
@@ -222,7 +240,6 @@ static int socket_type_is_supported(int type)
 
 static int socket_proto_is_supported(int proto)
 {
-    LOG_INF("called: %s",__func__);
 	switch (proto) {
 	case NET_IPPROTO_TCP:
 		break;
@@ -234,11 +251,9 @@ static int socket_proto_is_supported(int proto)
 
 	return 0;
 }
-// Utils End
 
 static bool ch9120_socket_is_supported(int family, int type, int proto)
 {
-    LOG_INF("called: %s",__func__);
     int ret;
     
     ret = socket_family_is_supported(family);
@@ -261,8 +276,6 @@ static bool ch9120_socket_is_supported(int family, int type, int proto)
 
 int ch9120_socket_create(int family, int type, int proto)
 {
-    LOG_INF("called: %s",__func__);
-
     int fd;
     struct ch9120_socket *sck = &ch9120_runtime_data.sock;
     //TODO: check sck ?
@@ -284,11 +297,6 @@ int ch9120_socket_create(int family, int type, int proto)
     sck->proto = proto;
     sck->state = CH9120_SOCK_OPEN;
     sck->is_nonblocking = false;
-    
-    k_mutex_init(&sck->lock);
-    k_sem_init(&sck->rx_sem, 0, 1);
-    k_sem_init(&sck->connect_sem, 0, 1);
-    ring_buf_init(&sck->rx_buf, sizeof(sck->rx_buf_data), sck->rx_buf_data);
 
     fd = zvfs_reserve_fd();
 	if (fd < 0) {
@@ -306,32 +314,10 @@ int ch9120_socket_create(int family, int type, int proto)
 	return fd;
 }
 
-/*---- Socket END ----*/
-
-/*---- Device Instance ----*/
-
 static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 {
 
 }
-
-// static void ch9120_send_cmd(const struct device *uart_dev,
-//                              uint8_t cmd, const uint8_t *data, size_t len)
-// {
-//     uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
-
-//     /* send header */
-//     for (int i = 0; i < 3; i++) {
-//         uart_poll_out(uart_dev, header[i]);
-//     }
-
-//     /* send data bytes */
-//     for (size_t i = 0; i < len; i++) {
-//         uart_poll_out(uart_dev, data[i]);
-//     }
-
-//     k_msleep(10);
-// }
 
 static void ch9120_uart_flush(const struct device *uart_dev)
 {
@@ -393,7 +379,6 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
 
 static int ch9120_init(const struct device *dev)
 {
-    LOG_INF("called: %s",__func__);
     int ret;
     struct ch9120_runtime *data = dev->data;
     const struct ch9120_config *cfg = dev->config;
@@ -491,6 +476,11 @@ static int ch9120_init(const struct device *dev)
     data->sock.in_use = false;
     k_mutex_init(&data->drv_lock);
 
+    k_mutex_init(&(data->sock.lock));
+    k_sem_init(&(data->sock.rx_sem), 0, 1);
+    k_sem_init(&(data->sock.connect_sem), 0, 1);
+    ring_buf_init(&(data->sock.rx_buf), sizeof(data->sock.rx_buf_data), data->sock.rx_buf_data);
+
     LOG_INF("CH9120 Initialized Successfully with DHCP");
 
     return 0;
@@ -506,8 +496,6 @@ static void ch9120_iface_init(struct net_if *iface)
     data->iface = iface;
     net_if_socket_offload_set(iface, ch9120_socket_create);
 }
-
-/*---- Device Instance END ----*/
 
 static struct offloaded_if_api ch9120_if_apis = {
 	.iface_api.init = ch9120_iface_init,
