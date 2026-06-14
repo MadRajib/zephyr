@@ -8,53 +8,33 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 
+LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
+
 #define DT_DRV_COMPAT wch_ch9120
 #define CH9120_NODE DT_INST(0, wch_ch9120)
 #define CH9120_RX_BUF_SIZE 1024
+#define CH9120_UART_PRE_DELAY	30
+#define CH9120_BAUD_CONFIG		9600
 
-LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
-
-/* CH9120 binary protocol header bytes */
+/* header bytes */
 #define CH9120_HDR_0			0x57
 #define CH9120_HDR_1			0xAB
 
 /* command codes */
-#define CH9120_CMD_MODE				0x10
-#define CH9120_CMD_LOCAL_IP			0x11
-#define CH9120_CMD_SUBNET_MASK		0x12
-#define CH9120_CMD_GATEWAY			0x13
-#define CH9120_CMD_LOCAL_PORT		0x14
-#define CH9120_CMD_TARGET_IP		0x15
-#define CH9120_CMD_TARGET_PORT		0x16
-#define CH9120_CMD_PORT_RANDOM		0x17
-#define CH9120_CMD_BAUD				0x21
-#define CH9120_CMD_SET_DISCONNECT	0x24
-#define CH9120_CMD_DHCP				0x33
+#define CH9120_CMD_SET_MODE			0x10
+#define CH9120_CMD_SET_TARGET_IP	0x15
+#define CH9120_CMD_SET_TARGET_PORT	0x16
+#define CH9120_CMD_SET_DHCP			0x33
 #define CH9120_LEAVE_CFG_MODE		0x5e
-#define CH9120_CMD_GET_IP           0x61
-#define CH9120_CMD_GET_DISCONNECT	0x74
-#define CH9120_CMD_GET_MODE         0x60
 #define CH9120_CMD_GET_MAC			0x81
 
 /* exit config mode sequence */
 #define CH9120_CMD_SAVE			0x0d
 #define CH9120_CMD_RESET		0x0e
-#define CH9120_CMD_EXIT			0x5e
 
 /* mode values */
 #define CH9120_MODE_TCP_SERVER	0x00
 #define CH9120_MODE_TCP_CLIENT	0x01
-#define CH9120_MODE_UDP_SERVER	0x02
-#define CH9120_MODE_UDP_CLIENT	0x03
-
-/* baud rates */
-#define CH9120_BAUD_CONFIG		9600
-#define CH9120_BAUD_DATA		115200
-
-#define CH9120_UART_PRE_DELAY	30
-#define CH9120_UART_PRE_DELAY	50
-
-#define MAX_DATA_LENGTH			1024
 
 enum ch9120_sock_state {
 	CH9120_SOCK_CLOSED,
@@ -181,8 +161,6 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 {
 	uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
 	const struct device *uart_dev = cfg->uart_dev;
-	uint8_t ack;
-	int ret;
 	size_t indx;
 
 	/* Enter config mode */
@@ -233,7 +211,7 @@ static int ch9120_close(void *obj)
 	}
 
 	mode = CH9120_MODE_TCP_SERVER;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("failed to set tcp server: %d", ret);
@@ -279,14 +257,13 @@ static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
 
 static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
 {
-	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
-	const struct ch9120_config *cfg = &ch9120_config_data;
-	const struct sockaddr_in *addr4 = (const struct sockaddr_in *)addr;
-	uint8_t dst_ip[4];
-	uint8_t port_bytes[2];
-	uint16_t dst_port = 0U;
 	int ret;
 	uint8_t mode;
+	uint16_t dst_port = 0U;
+	uint8_t dst_ip[4];
+	uint8_t port_bytes[2];
+	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
+	const struct ch9120_config *cfg = &ch9120_config_data;
 
 	if (sck == NULL) {
 		LOG_ERR("%s: invalid socket received", __func__);
@@ -317,14 +294,14 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 
 	memcpy(dst_ip, &net_sin(addr)->sin_addr.s_addr, 4);
 
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_TARGET_IP,
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_TARGET_IP,
 						dst_ip, 4, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to send destination IP :%d", ret);
 		goto err;
 	}
 
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_TARGET_PORT,
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_TARGET_PORT,
 						port_bytes, 2, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("failed to set dst port: %d", ret);
@@ -332,7 +309,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	}
 
 	mode = CH9120_MODE_TCP_CLIENT;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("failed to set tcp client: %d", ret);
@@ -375,8 +352,8 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 		return -ENOTCONN;
 	}
 
-	if (len > MAX_DATA_LENGTH) {
-		len = MAX_DATA_LENGTH;
+	if (len > CH9120_RX_BUF_SIZE) {
+		len = CH9120_RX_BUF_SIZE;
 	}
 
 	for (size_t i = 0; i < len; i++) {
@@ -390,7 +367,7 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 				 struct net_sockaddr *addr, net_socklen_t *addrlen)
 {
 	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
-	uint32_t ret;
+	uint32_t read;
 	int ret;
 
 	ARG_UNUSED(flags);
@@ -402,11 +379,6 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 	if (addr != NULL && addrlen != NULL) {
 		*addrlen = sizeof(sck->dst);
 		memcpy(addr, &sck->dst, *addrlen);
-	}
-
-	if (src_addr && addrlen) {
-		*addrlen = sizeof(sock->dst);
-		memcpy(src_addr, &sock->dst, *addrlen);
 	}
 
 	if (sck->is_nonblocking) {
@@ -424,44 +396,22 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 		}
 	}
 
-	ret = ring_buf_get(&sck->rx_buf, buf, MAX_DATA_LEN);
-	if (ret == 0) {
+	read = ring_buf_get(&sck->rx_buf, buf, CH9120_RX_BUF_SIZE);
+	if (read == 0) {
 		return -EAGAIN;
 	}
 
-	return (ssize_t)ret;
+	return (ssize_t)read;
 }
 
 static ssize_t ch9120_read(void *obj, void *buf, size_t sz)
 {
-	ch9120_recvfrom(obj, buf, sz, 0, NULL, NULL);
+	return ch9120_recvfrom(obj, buf, sz, 0, NULL, NULL);
 }
 
 static ssize_t ch9120_write(void *obj, const void *buf, size_t sz)
 {
 	return ch9120_sendto(obj, buf, sz, 0, NULL, 0);
-}
-
-static int ch9120_getsockopt(void *obj, int level, int optname,
-			   void *optval, net_socklen_t *optlen)
-{
-	return 0;
-}
-
-static int ch9120_setsockopt(void *obj, int level, int optname,
-			   const void *optval, net_socklen_t optlen)
-{
-	return 0;
-}
-
-static int ch9120_getpeername(void *obj, struct net_sockaddr *addr, net_socklen_t *addrlen)
-{
-	return 0;
-}
-
-static int ch9120_getsockname(void *obj, struct net_sockaddr *addr, net_socklen_t *addrlen)
-{
-	return 0;
 }
 
 static int socket_family_is_supported(int family)
@@ -643,7 +593,7 @@ static int ch9120_init(const struct device *dev)
 	k_msleep(500);
 
 	mode = CH9120_MODE_TCP_SERVER;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("failed to set tcp server: %d", ret);
@@ -651,21 +601,11 @@ static int ch9120_init(const struct device *dev)
 	}
 
 	enable_flag = 0x01;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_DHCP,
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DHCP,
 					&enable_flag, 1,
 					CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to set dhcp:%d", ret);
-		return -EIO;
-	}
-	k_msleep(500);
-
-	enable_flag = 0x01;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DISCONNECT,
-					&enable_flag, 1,
-					CH9120_UART_PRE_DELAY, 1000);
-	if (ret < 0) {
-		LOG_ERR("Failed to set rj45 disconnect enable :%d", ret);
 		return -EIO;
 	}
 	k_msleep(500);
@@ -746,10 +686,8 @@ static const struct socket_op_vtable ch9120_socket_fd_op_vtable = {
 	.sendmsg = NULL,
 	.recvfrom = ch9120_recvfrom,
 	.recvmsg = NULL,
-	.getsockopt = ch9120_getsockopt,
-	.setsockopt = ch9120_setsockopt,
-	.getpeername = ch9120_getpeername,
-	.getsockname = ch9120_getsockname,
+	.getsockopt = NULL,
+	.setsockopt = NULL,
 };
 
 NET_DEVICE_DT_INST_OFFLOAD_DEFINE(
