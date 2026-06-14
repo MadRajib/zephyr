@@ -54,6 +54,8 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 #define CH9120_UART_PRE_DELAY	30
 #define CH9120_UART_PRE_DELAY	50
 
+#define MAX_DATA_LENGTH			1024
+
 enum ch9120_sock_state {
 	CH9120_SOCK_CLOSED,
 	CH9120_SOCK_OPEN,
@@ -265,6 +267,7 @@ static int ch9120_close(void *obj)
 
 	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
 
+	uart_irq_rx_disable(cfg->uart_dev);
 	LOG_DBG("socket closed");
 	return 0;
 }
@@ -340,6 +343,8 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	sck->state = CH9120_SOCK_CONNECTED;
 	k_mutex_unlock(&sck->lock);
 
+	uart_irq_rx_enable(cfg->uart_dev);
+
 	return 0;
 
 err:
@@ -361,11 +366,19 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 	ARG_UNUSED(addr);
 	ARG_UNUSED(addrlen);
 
+	if (!buf || len == 0) {
+		errno = EINVAL;
+		return -1;
+	}
+
 	if (sck->state != CH9120_SOCK_CONNECTED) {
 		return -ENOTCONN;
 	}
 
-	/* write raw bytes to UART — CH9120 handles TCP wrapping */
+	if (len > MAX_DATA_LENGTH) {
+		len = MAX_DATA_LENGTH;
+	}
+
 	for (size_t i = 0; i < len; i++) {
 		uart_poll_out(cfg->uart_dev, data[i]);
 	}
@@ -373,20 +386,60 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 	return len;
 }
 
+static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
+				 struct net_sockaddr *addr, net_socklen_t *addrlen)
+{
+	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
+	uint32_t ret;
+	int ret;
+
+	ARG_UNUSED(flags);
+
+	if (sck->state != CH9120_SOCK_CONNECTED) {
+		return -ENOTCONN;
+	}
+
+	if (addr != NULL && addrlen != NULL) {
+		*addrlen = sizeof(sck->dst);
+		memcpy(addr, &sck->dst, *addrlen);
+	}
+
+	if (src_addr && addrlen) {
+		*addrlen = sizeof(sock->dst);
+		memcpy(src_addr, &sock->dst, *addrlen);
+	}
+
+	if (sck->is_nonblocking) {
+		if (ring_buf_is_empty(&sck->rx_buf)) {
+			return -EAGAIN;
+		}
+	} else {
+		ret = k_sem_take(&sck->rx_sem, K_FOREVER);
+		if (ret < 0) {
+			return -EINTR;
+		}
+
+		if (sck->state != CH9120_SOCK_CONNECTED) {
+			return -ENOTCONN;
+		}
+	}
+
+	ret = ring_buf_get(&sck->rx_buf, buf, MAX_DATA_LEN);
+	if (ret == 0) {
+		return -EAGAIN;
+	}
+
+	return (ssize_t)ret;
+}
+
 static ssize_t ch9120_read(void *obj, void *buf, size_t sz)
 {
-	return 0;
+	ch9120_recvfrom(obj, buf, sz, 0, NULL, NULL);
 }
 
 static ssize_t ch9120_write(void *obj, const void *buf, size_t sz)
 {
 	return ch9120_sendto(obj, buf, sz, 0, NULL, 0);
-}
-
-static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
-				 struct net_sockaddr *addr, net_socklen_t *addrlen)
-{
-	return 0;
 }
 
 static int ch9120_getsockopt(void *obj, int level, int optname,
@@ -515,7 +568,25 @@ int ch9120_socket_create(int family, int type, int proto)
 
 static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 {
+	const struct device *dev = (const struct device *)user_data;
+	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
+	uint8_t buf[64];
+	int read;
 
+	if (!uart_irq_rx_ready(dev)) {
+		return;
+	}
+
+	read = uart_fifo_read(dev_uart, buf, sizeof(buf));
+	if (read <= 0) {
+		return;
+	}
+
+	/* only put data in buffer if socket is connected */
+	if (sck->in_use && sck->state == CH9120_SOCK_CONNECTED) {
+		ring_buf_put(&sck->rx_buf, buf, read);
+		k_sem_give(&sck->rx_sem);
+	}
 }
 
 static int ch9120_init(const struct device *dev)
