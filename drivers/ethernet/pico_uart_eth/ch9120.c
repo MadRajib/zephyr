@@ -30,7 +30,10 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 #define CH9120_CMD_BAUD				0x21
 #define CH9120_CMD_SET_DISCONNECT	0x24
 #define CH9120_CMD_DHCP				0x33
+#define CH9120_CMD_GET_IP           0x61
 #define CH9120_CMD_GET_DISCONNECT	0x74
+#define CH9120_CMD_GET_MODE         0x60
+#define CH9120_CMD_GET_MAC			0x81
 
 /* exit config mode sequence */
 #define CH9120_CMD_SAVE			0x0d
@@ -65,6 +68,7 @@ struct ch9120_socket {
 	int proto;
 	int family;
 	enum ch9120_sock_state state;
+	struct net_sockaddr dst;
 
 	struct sockaddr remote_addr;
 	struct ring_buf rx_buf;
@@ -80,6 +84,7 @@ struct ch9120_socket {
 struct ch9120_runtime {
 
 	struct net_if *iface;
+	uint8_t mac_addr[6];
 
 	struct ch9120_socket sock;
 	struct k_mutex drv_lock;
@@ -106,6 +111,110 @@ static const struct ch9120_config ch9120_config_data = {
 };
 
 static const struct socket_op_vtable ch9120_socket_fd_op_vtable;
+
+static void ch9120_uart_flush(const struct device *uart_dev)
+{
+	uint8_t c;
+
+	while (uart_fifo_read(uart_dev, &c, 1) > 0) {
+		/* discard */
+	}
+}
+
+static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
+				uint8_t cmd, const uint8_t *data, size_t len,
+				const uint16_t pre_delay, const uint16_t timeout)
+{
+	uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
+	const struct device *uart_dev = cfg->uart_dev;
+	uint8_t ack;
+	int ret;
+
+	/* Enter config mode */
+	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
+
+	ch9120_uart_flush(uart_dev);
+
+	for (int i = 0; i < 3; i++) {
+		uart_poll_out(uart_dev, header[i]);
+	}
+
+	for (size_t i = 0; i < len; i++) {
+		uart_poll_out(uart_dev, data[i]);
+	}
+
+	if (pre_delay) {
+		k_msleep(pre_delay);
+	}
+
+	/* Wait for 0xAA Acknowledgment from CH9120 */
+	for (int t = 0; t < timeout; t++) {
+		ret = uart_poll_in(uart_dev, &ack);
+		if (ret == 0) {
+			if (ack == 0xAA) {
+				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+				return 0;
+			}
+
+			if (ack == 0xEE) {
+				LOG_ERR("CH9120 rejected command 0x%02x", cmd);
+				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+				return -EPROTO;
+			}
+		}
+		k_msleep(10);
+	}
+
+	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
+	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+
+	return -EIO;
+}
+
+static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
+				uint8_t cmd, const uint8_t *data, size_t len,
+				uint8_t *read_buf, size_t read_len,
+				const uint16_t pre_delay, const uint16_t timeout)
+{
+	uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
+	const struct device *uart_dev = cfg->uart_dev;
+	uint8_t ack;
+	int ret;
+
+	/* Enter config mode */
+	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
+
+	ch9120_uart_flush(uart_dev);
+
+	for (int i = 0; i < 3; i++) {
+		uart_poll_out(uart_dev, header[i]);
+	}
+
+	for (size_t i = 0; i < len; i++) {
+		uart_poll_out(uart_dev, data[i]);
+	}
+
+	if (pre_delay) {
+		k_msleep(pre_delay);
+	}
+
+	size_t indx = 0;
+	for (int t = 0; t < timeout; t++) {
+		while (uart_poll_in(uart_dev, &read_buf[indx]) == 0) {
+            indx++;
+            if (indx >= read_len) {
+                gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+                return 0; 
+            }
+        }
+		k_msleep(10);
+	}
+
+	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
+	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+
+	return -EIO;
+}
 
 static ssize_t ch9120_read(void *obj, void *buf, size_t sz)
 {
@@ -156,7 +265,96 @@ static int ch9120_bind(void *obj, const struct net_sockaddr *addr, net_socklen_t
 
 static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
 {
+	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
+	const struct ch9120_config *cfg = &ch9120_config_data;
+	const struct sockaddr_in *addr4 = (const struct sockaddr_in *)addr;
+	uint8_t dst_ip[4];
+	uint8_t port_bytes[2];
+	uint16_t dst_port = 0U;
+	int ret;
+
+	if (sck == NULL) {
+		LOG_ERR("%s: invalid socket received", __func__);
+		return -1;
+	}
+
+	if (addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
+		return -EINVAL;
+	}
+
+	if (addr->sa_family != NET_AF_INET) {
+		errno = EAFNOSUPPORT;
+		return -1;
+	}
+
+	k_mutex_lock(&sck->lock, K_FOREVER);
+	if (sck->state != CH9120_SOCK_OPEN) {
+		k_mutex_unlock(&sck->lock);
+		return -EISCONN;
+	}
+
+	sck->state = CH9120_SOCK_CONNECTING;
+
+	memcpy(dst_ip, &addr4->sin_addr.s_addr, 4);
+	dst_port = ntohs(addr4->sin_port);
+	port_bytes[0] = dst_port & 0xff;
+	port_bytes[1] = (dst_port >> 8) & 0xff;
+
+	memcpy(&sck->dst, addr, sizeof(*addr));
+
+	LOG_INF("connect to %d.%d.%d.%d:%d",
+		dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dst_port);
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_TARGET_IP,
+						dst_ip, 4, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to send destination IP :%d", ret);
+		goto err;
+	}
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_TARGET_PORT,
+						port_bytes, 2, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("failed to set dst port: %d", ret);
+		goto err;
+	}
+
+	uint8_t mode = CH9120_MODE_TCP_CLIENT;
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
+						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("failed to set tcp client: %d", ret);
+		goto err;
+	}
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE,
+				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+		return -EIO;
+	}
+	k_msleep(500);
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
+				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+		return -EIO;
+	}
+	k_msleep(1000);
+
+	k_mutex_lock(&sck->lock, K_FOREVER);
+	sck->state = CH9120_SOCK_CONNECTED;
+	k_mutex_unlock(&sck->lock);
+
 	return 0;
+
+err:
+	k_mutex_lock(&sck->lock, K_FOREVER);
+	sck->state = CH9120_SOCK_OPEN;
+	k_mutex_unlock(&sck->lock);
+
+	return ret;
 }
 
 static int ch9120_listen(void *obj, int backlog)
@@ -320,65 +518,6 @@ static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 
 }
 
-static void ch9120_uart_flush(const struct device *uart_dev)
-{
-	uint8_t c;
-
-	while (uart_fifo_read(uart_dev, &c, 1) > 0) {
-		/* discard */
-	}
-}
-
-static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
-				uint8_t cmd, const uint8_t *data, size_t len,
-				const uint16_t pre_delay, const uint16_t timeout)
-{
-	uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
-	const struct device *uart_dev = cfg->uart_dev;
-	uint8_t ack;
-	int ret;
-
-	/* Enter config mode */
-	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
-
-	ch9120_uart_flush(uart_dev);
-
-	for (int i = 0; i < 3; i++) {
-		uart_poll_out(uart_dev, header[i]);
-	}
-
-	for (size_t i = 0; i < len; i++) {
-		uart_poll_out(uart_dev, data[i]);
-	}
-
-	if (pre_delay) {
-		k_msleep(pre_delay);
-	}
-
-	/* Wait for 0xAA Acknowledgment from CH9120 */
-	for (int t = 0; t < timeout; t++) {
-		ret = uart_poll_in(uart_dev, &ack);
-		if (ret == 0) {
-			if (ack == 0xAA) {
-				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-				return 0;
-			}
-
-			if (ack == 0xEE) {
-				LOG_ERR("CH9120 rejected command 0x%02x", cmd);
-				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-				return -EPROTO;
-			}
-		}
-		k_msleep(10);
-	}
-
-	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
-	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-
-	return -EIO;
-}
-
 static int ch9120_init(const struct device *dev)
 {
 	int ret;
@@ -470,6 +609,14 @@ static int ch9120_init(const struct device *dev)
 	}
 	k_msleep(1000);
 
+	ret = ch9120_send_cmd_read(cfg, CH9120_CMD_GET_MAC,
+		NULL, 0, data->mac_addr, sizeof(data->mac_addr),
+		CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to read mac :%d", ret);
+		return -EIO;
+	}
+
 	ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9130_uart_cb, (void *)dev);
 	if (ret < 0) {
 		LOG_ERR("Couldn't set UART callback");
@@ -495,6 +642,9 @@ static void ch9120_iface_init(struct net_if *iface)
 {
 	const struct device *dev = net_if_get_device(iface);
 	struct ch9120_runtime *data = dev->data;
+
+	net_if_set_link_addr(iface, data->mac_addr,
+			sizeof(data->mac_addr), NET_LINK_ETHERNET);
 
 	data->iface = iface;
 	net_if_socket_offload_set(iface, ch9120_socket_create);
