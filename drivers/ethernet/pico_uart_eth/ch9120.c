@@ -348,14 +348,6 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		goto err;
 	}
 
-	// ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
-	// 			NULL, 0, CH9120_UART_PRE_DELAY, 1000);
-	// if (ret < 0) {
-	// 	LOG_ERR("Failed to save config :%d", ret);
-	// 	return -EIO;
-	// }
-	// k_msleep(1000);
-
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	sck->state = CH9120_SOCK_CONNECTED;
 	k_mutex_unlock(&sck->lock);
