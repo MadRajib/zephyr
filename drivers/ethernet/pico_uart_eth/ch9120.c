@@ -30,6 +30,7 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 #define CH9120_CMD_BAUD				0x21
 #define CH9120_CMD_SET_DISCONNECT	0x24
 #define CH9120_CMD_DHCP				0x33
+#define CH9120_LEAVE_CFG_MODE		0x5e
 #define CH9120_CMD_GET_IP           0x61
 #define CH9120_CMD_GET_DISCONNECT	0x74
 #define CH9120_CMD_GET_MODE         0x60
@@ -229,10 +230,32 @@ static ssize_t ch9120_write(void *obj, const void *buf, size_t sz)
 static int ch9120_close(void *obj)
 {
 	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
+	const struct ch9120_config *cfg = &ch9120_config_data;
+	int ret;
 
 	if (sck == NULL) {
 		LOG_ERR("%s: invalid socket received", __func__);
 		return -1;
+	}
+
+	uint8_t mode = CH9120_MODE_TCP_SERVER;
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
+						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("failed to set tcp server: %d", ret);
+	}
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE,
+			NULL, 0,
+			CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+	}
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
+				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
 	}
 
 	k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
@@ -249,6 +272,7 @@ static int ch9120_close(void *obj)
 	k_sem_reset(&sck->connect_sem);
 
 	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
+
 	LOG_DBG("socket closed");
 	return 0;
 }
@@ -308,7 +332,6 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		LOG_ERR("Failed to send destination IP :%d", ret);
 		goto err;
 	}
-	
 
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_TARGET_PORT,
 						port_bytes, 2, CH9120_UART_PRE_DELAY, 1000);
@@ -324,6 +347,14 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		LOG_ERR("failed to set tcp client: %d", ret);
 		goto err;
 	}
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
+				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+		return -EIO;
+	}
+	k_msleep(1000);
 
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	sck->state = CH9120_SOCK_CONNECTED;
@@ -551,8 +582,15 @@ static int ch9120_init(const struct device *dev)
 	gpio_pin_set_dt(&cfg->rst_gpio, 0);
 	k_msleep(500);
 
-	uint8_t dhcp_enable = 0x01;
+	uint8_t mode = CH9120_MODE_TCP_SERVER;
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
+						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("failed to set tcp server: %d", ret);
+		return -EIO;
+	}
 
+	uint8_t dhcp_enable = 0x01;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_DHCP,
 					&dhcp_enable, 1,
 					CH9120_UART_PRE_DELAY, 1000);
@@ -563,7 +601,6 @@ static int ch9120_init(const struct device *dev)
 	k_msleep(500);
 
 	uint8_t disconnect_enable = 0x01;
-
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DISCONNECT,
 					&disconnect_enable, 1,
 					CH9120_UART_PRE_DELAY, 1000);
@@ -583,8 +620,7 @@ static int ch9120_init(const struct device *dev)
 	k_msleep(500);
 
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
-				NULL, 0,
-				CH9120_UART_PRE_DELAY, 1000);
+				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to save config :%d", ret);
 		return -EIO;
