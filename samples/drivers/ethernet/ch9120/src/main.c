@@ -100,6 +100,15 @@ int main(void)
         return -1;
     }
     LOG_INF("connected");
+
+    const char *msg = "hello from CH9120\n";
+    ret = zsock_send(fd, msg, strlen(msg), 0);
+    if (ret < 0) {
+        LOG_ERR("send() failed errno=%d", errno);
+    } else {
+        LOG_INF("sent %d bytes", ret);
+    }
+
     k_sleep(K_SECONDS(10));
     zsock_close(fd);
 

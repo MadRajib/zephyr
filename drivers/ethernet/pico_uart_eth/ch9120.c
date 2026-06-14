@@ -218,16 +218,6 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 	return -EIO;
 }
 
-static ssize_t ch9120_read(void *obj, void *buf, size_t sz)
-{
-	return 0;
-}
-
-static ssize_t ch9120_write(void *obj, const void *buf, size_t sz)
-{
-	return 0;
-}
-
 static int ch9120_close(void *obj)
 {
 	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
@@ -280,11 +270,6 @@ static int ch9120_close(void *obj)
 }
 
 static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
-{
-	return 0;
-}
-
-static int ch9120_bind(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
 {
 	return 0;
 }
@@ -365,34 +350,41 @@ err:
 	return ret;
 }
 
-static int ch9120_listen(void *obj, int backlog)
-{
-	return 0;
-}
-
-static int ch9120_accept(void *obj, struct net_sockaddr *addr, net_socklen_t *addrlen)
-{
-	return 0;
-}
-
 static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 			   const struct net_sockaddr *addr, net_socklen_t addrlen)
 {
+	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
+	const struct ch9120_config *cfg = &ch9120_config_data;
+	const uint8_t *data = buf;
+
+	ARG_UNUSED(flags);
+	ARG_UNUSED(addr);
+	ARG_UNUSED(addrlen);
+
+	if (sck->state != CH9120_SOCK_CONNECTED) {
+		return -ENOTCONN;
+	}
+
+	/* write raw bytes to UART — CH9120 handles TCP wrapping */
+	for (size_t i = 0; i < len; i++) {
+		uart_poll_out(cfg->uart_dev, data[i]);
+	}
+
+	return len;
+}
+
+static ssize_t ch9120_read(void *obj, void *buf, size_t sz)
+{
 	return 0;
 }
 
-static ssize_t ch9120_sendmsg(void *obj, const struct net_msghdr *msg, int flags)
+static ssize_t ch9120_write(void *obj, const void *buf, size_t sz)
 {
-	return 0;
+	return ch9120_sendto(obj, buf, sz, 0, NULL, 0);
 }
 
 static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 				 struct net_sockaddr *addr, net_socklen_t *addrlen)
-{
-	return 0;
-}
-
-static ssize_t ch9120_recvmsg(void *obj, struct net_msghdr *msg, int flags)
 {
 	return 0;
 }
@@ -589,7 +581,7 @@ static int ch9120_init(const struct device *dev)
 
 	enable_flag = 0x01;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_DHCP,
-					&dhcp_enable, 1,
+					&enable_flag, 1,
 					CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to set dhcp:%d", ret);
@@ -599,7 +591,7 @@ static int ch9120_init(const struct device *dev)
 
 	enable_flag = 0x01;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DISCONNECT,
-					&disconnect_enable, 1,
+					&enable_flag, 1,
 					CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to set rj45 disconnect enable :%d", ret);
