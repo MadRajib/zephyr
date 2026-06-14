@@ -181,6 +181,7 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 	const struct device *uart_dev = cfg->uart_dev;
 	uint8_t ack;
 	int ret;
+	size_t indx;
 
 	/* Enter config mode */
 	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
@@ -199,15 +200,15 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 		k_msleep(pre_delay);
 	}
 
-	size_t indx = 0;
+	indx = 0;
 	for (int t = 0; t < timeout; t++) {
 		while (uart_poll_in(uart_dev, &read_buf[indx]) == 0) {
-            indx++;
-            if (indx >= read_len) {
-                gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-                return 0; 
-            }
-        }
+			indx++;
+			if (indx >= read_len) {
+				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
+				return 0;
+			}
+		}
 		k_msleep(10);
 	}
 
@@ -232,13 +233,14 @@ static int ch9120_close(void *obj)
 	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
 	const struct ch9120_config *cfg = &ch9120_config_data;
 	int ret;
+	uint8_t mode;
 
 	if (sck == NULL) {
 		LOG_ERR("%s: invalid socket received", __func__);
 		return -1;
 	}
 
-	uint8_t mode = CH9120_MODE_TCP_SERVER;
+	mode = CH9120_MODE_TCP_SERVER;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
@@ -296,6 +298,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	uint8_t port_bytes[2];
 	uint16_t dst_port = 0U;
 	int ret;
+	uint8_t mode;
 
 	if (sck == NULL) {
 		LOG_ERR("%s: invalid socket received", __func__);
@@ -340,7 +343,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		goto err;
 	}
 
-	uint8_t mode = CH9120_MODE_TCP_CLIENT;
+	mode = CH9120_MODE_TCP_CLIENT;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
@@ -526,6 +529,8 @@ static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 static int ch9120_init(const struct device *dev)
 {
 	int ret;
+	uint8_t mode;
+	uint8_t enable_flag;
 	struct ch9120_runtime *data = dev->data;
 	const struct ch9120_config *cfg = dev->config;
 
@@ -574,7 +579,7 @@ static int ch9120_init(const struct device *dev)
 	gpio_pin_set_dt(&cfg->rst_gpio, 0);
 	k_msleep(500);
 
-	uint8_t mode = CH9120_MODE_TCP_SERVER;
+	mode = CH9120_MODE_TCP_SERVER;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
@@ -582,7 +587,7 @@ static int ch9120_init(const struct device *dev)
 		return -EIO;
 	}
 
-	uint8_t dhcp_enable = 0x01;
+	enable_flag = 0x01;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_DHCP,
 					&dhcp_enable, 1,
 					CH9120_UART_PRE_DELAY, 1000);
@@ -592,7 +597,7 @@ static int ch9120_init(const struct device *dev)
 	}
 	k_msleep(500);
 
-	uint8_t disconnect_enable = 0x01;
+	enable_flag = 0x01;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DISCONNECT,
 					&disconnect_enable, 1,
 					CH9120_UART_PRE_DELAY, 1000);
