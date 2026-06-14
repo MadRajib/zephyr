@@ -275,7 +275,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 
 	if (sck == NULL) {
 		LOG_ERR("%s: invalid socket received", __func__);
-		return -1;
+		return -EINVAL;
 	}
 
 	if (addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
@@ -294,16 +294,13 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	}
 
 	sck->state = CH9120_SOCK_CONNECTING;
+	k_mutex_unlock(&sck->lock);
 
-	memcpy(dst_ip, &addr4->sin_addr.s_addr, 4);
-	dst_port = ntohs(addr4->sin_port);
+	dst_port = net_ntohs(net_sin(addr)->sin_port);
 	port_bytes[0] = dst_port & 0xff;
 	port_bytes[1] = (dst_port >> 8) & 0xff;
 
-	memcpy(&sck->dst, addr, sizeof(*addr));
-
-	LOG_INF("connect to %d.%d.%d.%d:%d",
-		dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dst_port);
+	memcpy(dst_ip, &net_sin(addr)->sin_addr.s_addr, 4);
 
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_TARGET_IP,
 						dst_ip, 4, CH9120_UART_PRE_DELAY, 1000);
@@ -311,6 +308,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		LOG_ERR("Failed to send destination IP :%d", ret);
 		goto err;
 	}
+	
 
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_TARGET_PORT,
 						port_bytes, 2, CH9120_UART_PRE_DELAY, 1000);
@@ -326,22 +324,6 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		LOG_ERR("failed to set tcp client: %d", ret);
 		goto err;
 	}
-
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE,
-				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
-	if (ret < 0) {
-		LOG_ERR("Failed to save config :%d", ret);
-		return -EIO;
-	}
-	k_msleep(500);
-
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
-				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
-	if (ret < 0) {
-		LOG_ERR("Failed to save config :%d", ret);
-		return -EIO;
-	}
-	k_msleep(1000);
 
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	sck->state = CH9120_SOCK_CONNECTED;
@@ -622,7 +604,6 @@ static int ch9120_init(const struct device *dev)
 		LOG_ERR("Couldn't set UART callback");
 		return ret;
 	}
-	uart_irq_rx_enable(cfg->uart_dev);
 
 	/* Initialise driver state */
 	data->sock.in_use = false;
