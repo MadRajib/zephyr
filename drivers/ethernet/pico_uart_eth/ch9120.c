@@ -12,9 +12,9 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 
 #define DT_DRV_COMPAT wch_ch9120
 #define CH9120_NODE DT_INST(0, wch_ch9120)
-#define CH9120_RX_BUF_SIZE 1024
 #define CH9120_UART_PRE_DELAY	30
 #define CH9120_BAUD_CONFIG		9600
+#define ETH_CH9120_RX_BUF_SIZE	CONFIG_ETH_CH9120_RX_BUF_SIZE
 
 /* header bytes */
 #define CH9120_HDR_0			0x57
@@ -55,7 +55,7 @@ struct ch9120_socket {
 
 	struct sockaddr remote_addr;
 	struct ring_buf rx_buf;
-	uint8_t rx_buf_data[CH9120_RX_BUF_SIZE];
+	uint8_t rx_buf_data[ETH_CH9120_RX_BUF_SIZE];
 	struct k_sem rx_sem;
 
 	struct k_mutex lock;
@@ -308,6 +308,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		goto err;
 	}
 
+#if defined(CONFIG_ETH_CH9120_MODE_TCP_CLIENT)
 	mode = CH9120_MODE_TCP_CLIENT;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
@@ -315,6 +316,10 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		LOG_ERR("failed to set tcp client: %d", ret);
 		goto err;
 	}
+#else
+	LOG_ERR("other mode not supported");
+	goto err;
+#endif
 
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	sck->state = CH9120_SOCK_CONNECTED;
@@ -352,8 +357,8 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 		return -ENOTCONN;
 	}
 
-	if (len > CH9120_RX_BUF_SIZE) {
-		len = CH9120_RX_BUF_SIZE;
+	if (len > ETH_CH9120_RX_BUF_SIZE) {
+		len = ETH_CH9120_RX_BUF_SIZE;
 	}
 
 	for (size_t i = 0; i < len; i++) {
@@ -396,7 +401,7 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 		}
 	}
 
-	read = ring_buf_get(&sck->rx_buf, buf, CH9120_RX_BUF_SIZE);
+	read = ring_buf_get(&sck->rx_buf, buf, ETH_CH9120_RX_BUF_SIZE);
 	if (read == 0) {
 		return -EAGAIN;
 	}

@@ -11,28 +11,19 @@ menuconfig ETH_CH9120
 	  This offloads ethernet driver to ch9120 chip
 
 if ETH_CH9120
-config ETH_CH9120_LOCAL_IP
-    string "CH9120 local IP address"
-    default "192.168.1.100"
-    help
-      Local IP address for the CH9120 chip.
 
-config ETH_CH9120_SUBNET_MASK
-    string "CH9120 subnet mask"
-    default "255.255.255.0"
-    help
-      Subnet mask for the CH9120 chip.
+config ETH_CH9120_RX_BUF_SIZE
+	int "RX ring buffer size in bytes"
+	default 1024
+	range 256 4096
+	help
+	  Size of the receive ring buffer. Increase if dropping
+	  data at high throughput.
 
-config ETH_CH9120_GATEWAY
-    string "CH9120 gateway"
-    default "192.168.1.1"
-    help
-      Gateway IP address for the CH9120 chip.
+config ETH_CH9120_MODE_TCP_CLIENT
+	bool "Enable TCP client mode"
+	default y
+	help
+	  Enable TCP client operating mode for the CH9120 chip.
 
-config ETH_CH9120_LOCAL_PORT
-    int "CH9120 local port"
-    default 1000
-    range 1 65535
-    help
-      Local port number for the CH9120 chip.
 endif # ETH_CH9120
