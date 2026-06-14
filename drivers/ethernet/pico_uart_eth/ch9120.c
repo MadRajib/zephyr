@@ -59,7 +59,6 @@ struct ch9120_socket {
 	struct k_sem rx_sem;
 
 	struct k_mutex lock;
-	struct k_sem connect_sem;
 
 	bool is_nonblocking;
 };
@@ -241,7 +240,6 @@ static int ch9120_close(void *obj)
 
 	ring_buf_reset(&sck->rx_buf);
 	k_sem_reset(&sck->rx_sem);
-	k_sem_reset(&sck->connect_sem);
 
 	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
 
@@ -652,7 +650,6 @@ static int ch9120_init(const struct device *dev)
 
 	k_mutex_init(&(data->sock.lock));
 	k_sem_init(&(data->sock.rx_sem), 0, 1);
-	k_sem_init(&(data->sock.connect_sem), 0, 1);
 	ring_buf_init(&(data->sock.rx_buf), sizeof(data->sock.rx_buf_data), data->sock.rx_buf_data);
 
 	LOG_INF("CH9120 Initialized Successfully with DHCP");
