@@ -109,8 +109,30 @@ int main(void)
         LOG_INF("sent %d bytes", ret);
     }
 
-    k_sleep(K_SECONDS(10));
+    char rx_buf[64];
+
+    LOG_INF("waiting for data from server...");
+
+    while (1) {
+        memset(rx_buf, 0, sizeof(rx_buf));
+
+        ret = zsock_recv(fd, rx_buf, sizeof(rx_buf) - 1, 0);
+        if (ret < 0) {
+            LOG_ERR("recv() failed errno=%d", errno);
+            break;
+        }
+
+        if (ret == 0) {
+            /* server closed connection */
+            LOG_INF("server disconnected");
+            break;
+        }
+
+        LOG_INF("received %d bytes: %s", ret, rx_buf);
+    }
+
     zsock_close(fd);
+    LOG_INF("socket closed");
 
     LOG_INF("all checks passed");
 
