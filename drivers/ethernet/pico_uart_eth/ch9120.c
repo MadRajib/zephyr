@@ -69,9 +69,6 @@ struct ch9120_runtime {
 
 	struct ch9120_socket sock;
 	struct k_mutex drv_lock;
-	struct k_thread rx_thread;
-
-	k_thread_stack_t *rx_stack;
 };
 
 struct ch9120_config {
@@ -146,7 +143,8 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
 			if (ack == 0xEE) {
 				LOG_ERR("CH9120 rejected command 0x%02x", cmd);
 				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-				return -EPROTO;
+				errno = EPROTO;
+				return -1;
 			}
 		}
 		k_msleep(10);
@@ -155,7 +153,8 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
 	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
 	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
 
-	return -EIO;
+	errno = EIO;
+	return -1;
 }
 
 static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
@@ -199,7 +198,8 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
 	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
 
-	return -EIO;
+	errno = EIO;
+	return -1;
 }
 
 static int ch9120_wait_for_connection(const struct ch9120_config *cfg,
@@ -215,7 +215,8 @@ static int ch9120_wait_for_connection(const struct ch9120_config *cfg,
 		elapsed += CH9120_CONNECT_POLL_MS;
 	}
 
-	return -ETIMEDOUT;
+	errno = ETIMEDOUT;
+	return -1;
 }
 
 static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
@@ -273,6 +274,8 @@ static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 		ret = ring_buf_put_finish(&sck->rx_buf, total_size);
 		__ASSERT_NO_MSG(ret == 0);
 		k_sem_give(&sck->rx_sem);
+	} else if (claimed_len > 0) {
+		ring_buf_put_finish(&sck->rx_buf, 0);
 	}
 }
 
@@ -309,11 +312,15 @@ static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
 {
 	switch (request) {
 	case ZFD_IOCTL_POLL_PREPARE:
-		return -EXDEV;
-
+	{
+		errno = EXDEV;
+		return -1;
+	}
 	case ZFD_IOCTL_POLL_UPDATE:
-		return -EOPNOTSUPP;
-
+	{
+		errno = EOPNOTSUPP;
+		return -1;
+	}
 	default:
 		errno = EINVAL;
 		return -1;
@@ -334,11 +341,13 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 
 	if (sck == NULL) {
 		LOG_ERR("%s: invalid socket received", __func__);
-		return -EINVAL;
+		errno = EINVAL;
+		return -1;
 	}
 
 	if (addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
-		return -EINVAL;
+		errno = EINVAL;
+		return -1;
 	}
 
 	if (addr->sa_family != NET_AF_INET) {
@@ -349,7 +358,8 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	if (sck->state != CH9120_SOCK_OPEN) {
 		k_mutex_unlock(&sck->lock);
-		return -EISCONN;
+		errno = EISCONN;
+		return -1;
 	}
 
 	sck->state = CH9120_SOCK_CONNECTING;
@@ -383,6 +393,23 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		goto err;
 	}
 
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE,
+				NULL, 0,
+				CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+		return -1;
+	}
+	k_msleep(20);
+
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
+				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
+	if (ret < 0) {
+		LOG_ERR("Failed to save config :%d", ret);
+		return -1;
+	}
+	k_msleep(1000);
+
 	ret = ch9120_wait_for_connection(cfg, CH9120_CONNECT_TIMEOUT_MS);
 	if (ret < 0) {
 		LOG_ERR("TCP connection timed out!");
@@ -392,6 +419,8 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	sck->state = CH9120_SOCK_CONNECTED;
 	k_mutex_unlock(&sck->lock);
+
+	memcpy(&sck->dst, addr, addrlen);
 
 	uart_irq_rx_enable(cfg->uart_dev);
 
@@ -424,7 +453,9 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 	k_mutex_lock(&sck->lock, K_FOREVER);
 
 	if (sck->state != CH9120_SOCK_CONNECTED) {
-		return -ENOTCONN;
+		k_mutex_unlock(&sck->lock);
+		errno = ENOTCONN;
+		return -1;
 	}
 
 	if (len > ETH_CH9120_RX_BUF_SIZE) {
@@ -434,6 +465,7 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 	for (size_t i = 0; i < len; i++) {
 		uart_poll_out(cfg->uart_dev, data[i]);
 	}
+
 	k_mutex_unlock(&sck->lock);
 
 	return len;
@@ -448,10 +480,6 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 
 	ARG_UNUSED(flags);
 
-	if (sck->state != CH9120_SOCK_CONNECTED) {
-		return -ENOTCONN;
-	}
-
 	if (addr != NULL && addrlen != NULL) {
 		*addrlen = sizeof(sck->dst);
 		memcpy(addr, &sck->dst, *addrlen);
@@ -459,24 +487,24 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 
 	ret = k_sem_take(&sck->rx_sem, K_FOREVER);
 	if (ret < 0) {
-		return -EINTR;
+		errno = EINTR;
+		return -1;
 	}
 
 	if (ring_buf_is_empty(&sck->rx_buf)) {
-		return -EAGAIN;
+		errno = EAGAIN;
+		return -1;
 	}
 
 	if (sck->state != CH9120_SOCK_CONNECTED) {
-		return -ENOTCONN;
-	}
-
-	if (len >= ETH_CH9120_RX_BUF_SIZE) {
-		len = ETH_CH9120_RX_BUF_SIZE;
+		errno = ENOTCONN;
+		return -1;
 	}
 
 	read = ring_buf_get(&sck->rx_buf, buf, len);
 	if (read == 0) {
-		return -EAGAIN;
+		errno = EAGAIN;
+		return -1;
 	}
 
 	return (ssize_t)read;
@@ -561,17 +589,18 @@ int ch9120_socket_create(int family, int type, int proto)
 	if (sck->in_use) {
 		k_mutex_unlock(&ch9120_runtime_data.drv_lock);
 		LOG_ERR("Failed to create socket, already in use");
+		errno = EMFILE;
 		return -1;
 	}
-
-	sck->in_use = true;
-
-	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
 
 	sck->family = family;
 	sck->type = type;
 	sck->proto = proto;
 	sck->state = CH9120_SOCK_OPEN;
+
+	sck->in_use = true;
+
+	k_mutex_unlock(&ch9120_runtime_data.drv_lock);
 
 	fd = zvfs_reserve_fd();
 	if (fd < 0) {
@@ -609,7 +638,8 @@ static int ch9120_init(const struct device *dev)
 	/* Initialise UART*/
 	if (!device_is_ready(cfg->uart_dev)) {
 		LOG_ERR("UART device not ready");
-		return -ENODEV;
+		errno = ENODEV;
+		return -1;
 	}
 
 	LOG_INF("uart: device is ready");
@@ -647,7 +677,7 @@ static int ch9120_init(const struct device *dev)
 					CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to set dhcp:%d", ret);
-		return -EIO;
+		return -1;
 	}
 	k_msleep(500);
 
@@ -656,7 +686,7 @@ static int ch9120_init(const struct device *dev)
 				CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to save config :%d", ret);
-		return -EIO;
+		return -1;
 	}
 	k_msleep(500);
 
@@ -664,7 +694,7 @@ static int ch9120_init(const struct device *dev)
 				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to save config :%d", ret);
-		return -EIO;
+		return -1;
 	}
 	k_msleep(1000);
 
@@ -673,7 +703,7 @@ static int ch9120_init(const struct device *dev)
 		CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to read mac :%d", ret);
-		return -EIO;
+		return -1;
 	}
 
 	ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9120_uart_cb, (void *)dev);
