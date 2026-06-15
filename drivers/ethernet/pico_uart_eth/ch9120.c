@@ -96,7 +96,7 @@ static const struct socket_op_vtable ch9120_socket_fd_op_vtable;
 
 static bool ch9120_is_tcp_connected(const struct ch9120_config *cfg)
 {
-    return gpio_pin_get_dt(&cfg->tcp_gpio) == 1;
+	return gpio_pin_get_dt(&cfg->tcp_gpio) == 1;
 }
 
 static void ch9120_uart_flush(const struct device *uart_dev)
@@ -205,17 +205,17 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 static int ch9120_wait_for_connection(const struct ch9120_config *cfg,
 				uint32_t timeout_ms)
 {
-    uint32_t elapsed = 0;
+	uint32_t elapsed = 0;
 
-    while (elapsed < timeout_ms) {
-        if (ch9120_is_tcp_connected(cfg)) {
-            return 0;
-        }
-        k_msleep(CH9120_CONNECT_POLL_MS);
-        elapsed += CH9120_CONNECT_POLL_MS;
-    }
+	while (elapsed < timeout_ms) {
+		if (ch9120_is_tcp_connected(cfg)) {
+			return 0;
+		}
+		k_msleep(CH9120_CONNECT_POLL_MS);
+		elapsed += CH9120_CONNECT_POLL_MS;
+	}
 
-    return -ETIMEDOUT;
+	return -ETIMEDOUT;
 }
 
 static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
@@ -230,11 +230,11 @@ static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
 
 	/* Check if TCP is dropped */
-    if (!ch9120_is_tcp_connected(cfg) && sck->state == CH9120_SOCK_CONNECTED) {
-            LOG_WRN("TCP connection lost");
-            sck->state = CH9120_SOCK_OPEN;
-            k_sem_give(&sck->rx_sem);
-    }
+	if (!ch9120_is_tcp_connected(cfg) && sck->state == CH9120_SOCK_CONNECTED) {
+		LOG_WRN("TCP connection lost");
+		sck->state = CH9120_SOCK_OPEN;
+		k_sem_give(&sck->rx_sem);
+	}
 
 	while (true) {
 		uart_irq_update(dev_uart);
@@ -384,10 +384,10 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	}
 
 	ret = ch9120_wait_for_connection(cfg, CH9120_CONNECT_TIMEOUT_MS);
-    if (ret < 0) {
-        LOG_ERR("TCP connection timed out!");
-        goto err;
-    }
+	if (ret < 0) {
+		LOG_ERR("TCP connection timed out!");
+		goto err;
+	}
 
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	sck->state = CH9120_SOCK_CONNECTED;
@@ -459,7 +459,7 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 
 	ret = k_sem_take(&sck->rx_sem, K_FOREVER);
 	if (ret < 0) {
-			return -EINTR;
+		return -EINTR;
 	}
 
 	if (ring_buf_is_empty(&sck->rx_buf)) {
@@ -469,7 +469,7 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 	if (sck->state != CH9120_SOCK_CONNECTED) {
 		return -ENOTCONN;
 	}
-	
+
 	if (len >= ETH_CH9120_RX_BUF_SIZE) {
 		len = ETH_CH9120_RX_BUF_SIZE;
 	}
