@@ -60,8 +60,6 @@ struct ch9120_socket {
 	struct k_sem rx_sem;
 
 	struct k_mutex lock;
-
-	bool is_nonblocking;
 };
 
 struct ch9120_runtime {
@@ -82,6 +80,7 @@ struct ch9120_config {
 	struct gpio_dt_spec tcp_gpio;
 
 	const struct device *uart_dev;
+	bool hw_flow_control;
 };
 
 static struct ch9120_runtime ch9120_runtime_data;
@@ -221,33 +220,58 @@ static int ch9120_wait_for_connection(const struct ch9120_config *cfg,
 
 static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 {
+	int rx;
+	int ret;
+	uint32_t claimed_len = 0;
+	uint32_t total_size = 0;
+	uint8_t *buf;
 	const struct device *dev = (const struct device *)user_data;
 	const struct ch9120_config *cfg = dev->config;
 	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
-	uint8_t buf[64];
-	int read;
-
-	if (!uart_irq_rx_ready(dev)) {
-		return;
-	}
 
 	/* Check if TCP is dropped */
-    if (!ch9120_is_tcp_connected(cfg)) {
-        if (sck->state == CH9120_SOCK_CONNECTED) {
+    if (!ch9120_is_tcp_connected(cfg) && sck->state == CH9120_SOCK_CONNECTED) {
             LOG_WRN("TCP connection lost");
             sck->state = CH9120_SOCK_OPEN;
             k_sem_give(&sck->rx_sem);
-        }
-        return;
     }
 
-	read = uart_fifo_read(dev_uart, buf, sizeof(buf));
-	if (read <= 0) {
-		return;
+	while (true) {
+		uart_irq_update(dev_uart);
+
+		if (uart_irq_rx_ready(dev_uart) <= 0) {
+			break;
+		}
+
+		if (!claimed_len) {
+			if (total_size > 0) {
+				ret = ring_buf_put_finish(&sck->rx_buf, total_size);
+				__ASSERT_NO_MSG(ret == 0);
+				total_size = 0;
+			}
+
+			claimed_len = ring_buf_put_claim(&sck->rx_buf, &buf, UINT32_MAX);
+		}
+
+		if (!claimed_len) {
+			LOG_ERR("Rx buffer doesn't have enough space");
+			ch9120_uart_flush(dev_uart);
+			break;
+		}
+
+		rx = uart_fifo_read(dev_uart, buf, claimed_len);
+		if (rx <= 0) {
+			break;
+		}
+
+		buf += rx;
+		total_size += rx;
+		claimed_len -= rx;
 	}
 
-	if (sck->in_use && sck->state == CH9120_SOCK_CONNECTED) {
-		ring_buf_put(&sck->rx_buf, buf, read);
+	if (total_size > 0) {
+		ret = ring_buf_put_finish(&sck->rx_buf, total_size);
+		__ASSERT_NO_MSG(ret == 0);
 		k_sem_give(&sck->rx_sem);
 	}
 }
@@ -430,19 +454,17 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 		memcpy(addr, &sck->dst, *addrlen);
 	}
 
-	if (sck->is_nonblocking) {
-		if (ring_buf_is_empty(&sck->rx_buf)) {
-			return -EAGAIN;
-		}
-	} else {
-		ret = k_sem_take(&sck->rx_sem, K_FOREVER);
-		if (ret < 0) {
+	ret = k_sem_take(&sck->rx_sem, K_FOREVER);
+	if (ret < 0) {
 			return -EINTR;
-		}
+	}
 
-		if (sck->state != CH9120_SOCK_CONNECTED) {
-			return -ENOTCONN;
-		}
+	if (ring_buf_is_empty(&sck->rx_buf)) {
+		return -EAGAIN;
+	}
+
+	if (sck->state != CH9120_SOCK_CONNECTED) {
+		return -ENOTCONN;
 	}
 	
 	if (len >= ETH_CH9120_RX_BUF_SIZE) {
@@ -547,7 +569,6 @@ int ch9120_socket_create(int family, int type, int proto)
 	sck->type = type;
 	sck->proto = proto;
 	sck->state = CH9120_SOCK_OPEN;
-	sck->is_nonblocking = false;
 
 	fd = zvfs_reserve_fd();
 	if (fd < 0) {
