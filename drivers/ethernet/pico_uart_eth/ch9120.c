@@ -219,6 +219,39 @@ static int ch9120_wait_for_connection(const struct ch9120_config *cfg,
     return -ETIMEDOUT;
 }
 
+static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
+{
+	const struct device *dev = (const struct device *)user_data;
+	const struct ch9120_config *cfg = dev->config;
+	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
+	uint8_t buf[64];
+	int read;
+
+	if (!uart_irq_rx_ready(dev)) {
+		return;
+	}
+
+	/* Check if TCP is dropped */
+    if (!ch9120_is_tcp_connected(cfg)) {
+        if (sck->state == CH9120_SOCK_CONNECTED) {
+            LOG_WRN("TCP connection lost");
+            sck->state = CH9120_SOCK_OPEN;
+            k_sem_give(&sck->rx_sem);
+        }
+        return;
+    }
+
+	read = uart_fifo_read(dev_uart, buf, sizeof(buf));
+	if (read <= 0) {
+		return;
+	}
+
+	if (sck->in_use && sck->state == CH9120_SOCK_CONNECTED) {
+		ring_buf_put(&sck->rx_buf, buf, read);
+		k_sem_give(&sck->rx_sem);
+	}
+}
+
 static int ch9120_close(void *obj)
 {
 	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
@@ -250,6 +283,18 @@ static int ch9120_close(void *obj)
 
 static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
 {
+	switch (request) {
+	case ZFD_IOCTL_POLL_PREPARE:
+		return -EXDEV;
+
+	case ZFD_IOCTL_POLL_UPDATE:
+		return -EOPNOTSUPP;
+
+	default:
+		errno = EINVAL;
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -404,7 +449,7 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 		len = ETH_CH9120_RX_BUF_SIZE;
 	}
 
-	read = ring_buf_get(&sck->rx_buf, buf, ETH_CH9120_RX_BUF_SIZE);
+	read = ring_buf_get(&sck->rx_buf, buf, len);
 	if (read == 0) {
 		return -EAGAIN;
 	}
@@ -518,40 +563,6 @@ int ch9120_socket_create(int family, int type, int proto)
 
 	LOG_DBG("socket created fd:%d", fd);
 	return fd;
-}
-
-static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
-{
-	const struct device *dev = (const struct device *)user_data;
-	const struct ch9120_config *cfg = dev->config;
-	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
-	uint8_t buf[64];
-	int read;
-
-	if (!uart_irq_rx_ready(dev)) {
-		return;
-	}
-
-	/* Check if TCP connection dropped */
-    if (!ch9120_is_tcp_connected(cfg)) {
-        if (sck->state == CH9120_SOCK_CONNECTED) {
-            LOG_WRN("TCP connection lost");
-            sck->state = CH9120_SOCK_OPEN;
-            k_sem_give(&sck->rx_sem);
-        }
-        return;
-    }
-
-	read = uart_fifo_read(dev_uart, buf, sizeof(buf));
-	if (read <= 0) {
-		return;
-	}
-
-	/* only put data in buffer if socket is connected */
-	if (sck->in_use && sck->state == CH9120_SOCK_CONNECTED) {
-		ring_buf_put(&sck->rx_buf, buf, read);
-		k_sem_give(&sck->rx_sem);
-	}
 }
 
 static int ch9120_init(const struct device *dev)
