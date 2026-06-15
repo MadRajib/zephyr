@@ -12,9 +12,11 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 
 #define DT_DRV_COMPAT wch_ch9120
 #define CH9120_NODE DT_INST(0, wch_ch9120)
-#define CH9120_UART_PRE_DELAY	30
-#define CH9120_BAUD_CONFIG		9600
-#define ETH_CH9120_RX_BUF_SIZE	CONFIG_ETH_CH9120_RX_BUF_SIZE
+#define CH9120_UART_PRE_DELAY		30
+#define CH9120_BAUD_CONFIG			9600
+#define ETH_CH9120_RX_BUF_SIZE		CONFIG_ETH_CH9120_RX_BUF_SIZE
+#define CH9120_CONNECT_TIMEOUT_MS   5000
+#define CH9120_CONNECT_POLL_MS      10
 
 /* header bytes */
 #define CH9120_HDR_0			0x57
@@ -25,7 +27,6 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 #define CH9120_CMD_SET_TARGET_IP	0x15
 #define CH9120_CMD_SET_TARGET_PORT	0x16
 #define CH9120_CMD_SET_DHCP			0x33
-#define CH9120_LEAVE_CFG_MODE		0x5e
 #define CH9120_CMD_GET_MAC			0x81
 
 /* exit config mode sequence */
@@ -93,6 +94,11 @@ static const struct ch9120_config ch9120_config_data = {
 };
 
 static const struct socket_op_vtable ch9120_socket_fd_op_vtable;
+
+static bool ch9120_is_tcp_connected(const struct ch9120_config *cfg)
+{
+    return gpio_pin_get_dt(&cfg->tcp_gpio) == 1;
+}
 
 static void ch9120_uart_flush(const struct device *uart_dev)
 {
@@ -197,6 +203,22 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 	return -EIO;
 }
 
+static int ch9120_wait_for_connection(const struct ch9120_config *cfg,
+				uint32_t timeout_ms)
+{
+    uint32_t elapsed = 0;
+
+    while (elapsed < timeout_ms) {
+        if (ch9120_is_tcp_connected(cfg)) {
+            return 0;
+        }
+        k_msleep(CH9120_CONNECT_POLL_MS);
+        elapsed += CH9120_CONNECT_POLL_MS;
+    }
+
+    return -ETIMEDOUT;
+}
+
 static int ch9120_close(void *obj)
 {
 	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
@@ -284,7 +306,6 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		goto err;
 	}
 
-#if defined(CONFIG_ETH_CH9120_MODE_TCP_CLIENT)
 	mode = CH9120_MODE_TCP_CLIENT;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
@@ -292,10 +313,12 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		LOG_ERR("failed to set tcp client: %d", ret);
 		goto err;
 	}
-#else
-	LOG_ERR("other mode not supported");
-	goto err;
-#endif
+
+	ret = ch9120_wait_for_connection(cfg, CH9120_CONNECT_TIMEOUT_MS);
+    if (ret < 0) {
+        LOG_ERR("TCP connection timed out!");
+        goto err;
+    }
 
 	k_mutex_lock(&sck->lock, K_FOREVER);
 	sck->state = CH9120_SOCK_CONNECTED;
@@ -500,6 +523,7 @@ int ch9120_socket_create(int family, int type, int proto)
 static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 {
 	const struct device *dev = (const struct device *)user_data;
+	const struct ch9120_config *cfg = dev->config;
 	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
 	uint8_t buf[64];
 	int read;
@@ -507,6 +531,16 @@ static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 	if (!uart_irq_rx_ready(dev)) {
 		return;
 	}
+
+	/* Check if TCP connection dropped */
+    if (!ch9120_is_tcp_connected(cfg)) {
+        if (sck->state == CH9120_SOCK_CONNECTED) {
+            LOG_WRN("TCP connection lost");
+            sck->state = CH9120_SOCK_OPEN;
+            k_sem_give(&sck->rx_sem);
+        }
+        return;
+    }
 
 	read = uart_fifo_read(dev_uart, buf, sizeof(buf));
 	if (read <= 0) {
@@ -564,7 +598,7 @@ static int ch9120_init(const struct device *dev)
 
 	gpio_pin_configure_dt(&cfg->rst_gpio, GPIO_OUTPUT_INACTIVE);
 	gpio_pin_configure_dt(&cfg->cfg_gpio, GPIO_OUTPUT_INACTIVE);
-	gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT);
+	gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT | GPIO_PULL_UP);
 
 	/* Initialize the Chip */
 	gpio_pin_set_dt(&cfg->rst_gpio, 1);
