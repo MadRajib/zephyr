@@ -421,6 +421,8 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 		return -1;
 	}
 
+	k_mutex_lock(&sck->lock, K_FOREVER);
+
 	if (sck->state != CH9120_SOCK_CONNECTED) {
 		return -ENOTCONN;
 	}
@@ -432,6 +434,7 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 	for (size_t i = 0; i < len; i++) {
 		uart_poll_out(cfg->uart_dev, data[i]);
 	}
+	k_mutex_unlock(&sck->lock);
 
 	return len;
 }
