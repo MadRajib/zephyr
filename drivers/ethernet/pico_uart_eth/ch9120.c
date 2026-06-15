@@ -376,6 +376,10 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 			return -ENOTCONN;
 		}
 	}
+	
+	if (len >= ETH_CH9120_RX_BUF_SIZE) {
+		len = ETH_CH9120_RX_BUF_SIZE;
+	}
 
 	read = ring_buf_get(&sck->rx_buf, buf, ETH_CH9120_RX_BUF_SIZE);
 	if (read == 0) {
@@ -412,8 +416,6 @@ static int socket_type_is_supported(int type)
 	switch (type) {
 	case NET_SOCK_STREAM:
 		break;
-	case NET_SOCK_DGRAM:
-		break;
 	default:
 		return -1;
 	}
@@ -425,8 +427,6 @@ static int socket_proto_is_supported(int proto)
 {
 	switch (proto) {
 	case NET_IPPROTO_TCP:
-		break;
-	case NET_IPPROTO_UDP:
 		break;
 	default:
 		return -1;
@@ -497,7 +497,7 @@ int ch9120_socket_create(int family, int type, int proto)
 	return fd;
 }
 
-static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
+static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 {
 	const struct device *dev = (const struct device *)user_data;
 	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
@@ -607,7 +607,7 @@ static int ch9120_init(const struct device *dev)
 		return -EIO;
 	}
 
-	ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9130_uart_cb, (void *)dev);
+	ret = uart_irq_callback_user_data_set(cfg->uart_dev, ch9120_uart_cb, (void *)dev);
 	if (ret < 0) {
 		LOG_ERR("Couldn't set UART callback");
 		return ret;
