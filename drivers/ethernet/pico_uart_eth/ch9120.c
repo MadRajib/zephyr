@@ -201,32 +201,10 @@ static int ch9120_close(void *obj)
 {
 	struct ch9120_socket *sck = (struct ch9120_socket *)obj;
 	const struct ch9120_config *cfg = &ch9120_config_data;
-	int ret;
-	uint8_t mode;
 
 	if (sck == NULL) {
 		LOG_ERR("%s: invalid socket received", __func__);
 		return -1;
-	}
-
-	mode = CH9120_MODE_TCP_SERVER;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
-						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
-	if (ret < 0) {
-		LOG_ERR("failed to set tcp server: %d", ret);
-	}
-
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE,
-			NULL, 0,
-			CH9120_UART_PRE_DELAY, 1000);
-	if (ret < 0) {
-		LOG_ERR("Failed to save config :%d", ret);
-	}
-
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
-				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
-	if (ret < 0) {
-		LOG_ERR("Failed to save config :%d", ret);
 	}
 
 	k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
@@ -545,7 +523,6 @@ static void ch9130_uart_cb(const struct device *dev_uart, void *user_data)
 static int ch9120_init(const struct device *dev)
 {
 	int ret;
-	uint8_t mode;
 	uint8_t enable_flag;
 	struct ch9120_runtime *data = dev->data;
 	const struct ch9120_config *cfg = dev->config;
@@ -594,14 +571,6 @@ static int ch9120_init(const struct device *dev)
 	k_msleep(10);
 	gpio_pin_set_dt(&cfg->rst_gpio, 0);
 	k_msleep(500);
-
-	mode = CH9120_MODE_TCP_SERVER;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
-						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
-	if (ret < 0) {
-		LOG_ERR("failed to set tcp server: %d", ret);
-		return -EIO;
-	}
 
 	enable_flag = 0x01;
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DHCP,
