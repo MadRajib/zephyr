@@ -1,6 +1,5 @@
-# CH9120 ethernet driver options
-
 # SPDX-License-Identifier: Apache-2.0
+# CH9120 ethernet driver options
 
 menuconfig ETH_CH9120
 	bool "ch9120 ethernet driver"
@@ -8,7 +7,9 @@ menuconfig ETH_CH9120
 	depends on UART_INTERRUPT_DRIVEN
 	select NET_SOCKETS_OFFLOAD
 	help
-	  This offloads ethernet driver to ch9120 chip
+	  This offloads ethernet driver to ch9120 chip. Note: the
+	  chip only supports only a single TCP client connection at
+	  a time. Attempting to open a second socket will fail.
 
 if ETH_CH9120
 
@@ -19,11 +20,5 @@ config ETH_CH9120_RX_BUF_SIZE
 	help
 	  Size of the receive ring buffer. Increase if dropping
 	  data at high throughput.
-
-config ETH_CH9120_MODE_TCP_CLIENT
-	bool "Enable TCP client mode"
-	default y
-	help
-	  Enable TCP client operating mode for the CH9120 chip.
 
 endif # ETH_CH9120

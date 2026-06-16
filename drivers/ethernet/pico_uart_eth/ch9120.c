@@ -1,3 +1,12 @@
+/* SPDX-License-Identifier: Apache-2.0
+ *
+ * WCH CH9120 Ethernet Driver (UART-to-ethernet Offload chip).
+ *
+ * Based on reference implementation by Shifeng Li
+ * https://github.com/libdriver/ch9120
+ * 
+ */
+
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/offloaded_netdev.h>
@@ -34,7 +43,6 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 #define CH9120_CMD_RESET		0x0e
 
 /* mode values */
-#define CH9120_MODE_TCP_SERVER	0x00
 #define CH9120_MODE_TCP_CLIENT	0x01
 
 enum ch9120_sock_state {
@@ -54,7 +62,6 @@ struct ch9120_socket {
 	enum ch9120_sock_state state;
 	struct net_sockaddr dst;
 
-	struct sockaddr remote_addr;
 	struct ring_buf rx_buf;
 	uint8_t rx_buf_data[ETH_CH9120_RX_BUF_SIZE];
 	struct k_sem rx_sem;
@@ -77,7 +84,6 @@ struct ch9120_config {
 	struct gpio_dt_spec tcp_gpio;
 
 	const struct device *uart_dev;
-	bool hw_flow_control;
 };
 
 static struct ch9120_runtime ch9120_runtime_data;
@@ -228,7 +234,8 @@ static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 	uint8_t *buf;
 	const struct device *dev = (const struct device *)user_data;
 	const struct ch9120_config *cfg = dev->config;
-	struct ch9120_socket *sck = &ch9120_runtime_data.sock;
+	const struct ch9120_runtime *data = dev->data;
+	struct ch9120_socket *sck = &data->sock;
 
 	/* Check if TCP is dropped */
 	if (!ch9120_is_tcp_connected(cfg) && sck->state == CH9120_SOCK_CONNECTED) {
@@ -312,21 +319,14 @@ static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
 {
 	switch (request) {
 	case ZFD_IOCTL_POLL_PREPARE:
-	{
+	case ZFD_IOCTL_POLL_UPDATE:
 		errno = EXDEV;
 		return -1;
-	}
-	case ZFD_IOCTL_POLL_UPDATE:
-	{
-		errno = EOPNOTSUPP;
-		return -1;
-	}
 	default:
 		errno = EINVAL;
-		return -1;
 	}
 
-	return 0;
+	return -1;
 }
 
 static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
@@ -381,7 +381,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_TARGET_PORT,
 						port_bytes, 2, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
-		LOG_ERR("failed to set dst port: %d", ret);
+		LOG_ERR("Failed to set dst port: %d", ret);
 		goto err;
 	}
 
@@ -389,7 +389,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE,
 						&mode, 1, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
-		LOG_ERR("failed to set tcp client: %d", ret);
+		LOG_ERR("Failed to set tcp client: %d", ret);
 		goto err;
 	}
 
@@ -398,16 +398,16 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 				CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to save config :%d", ret);
-		return -1;
+		goto err;
 	}
-	k_msleep(20);
 
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
 				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
 		LOG_ERR("Failed to save config :%d", ret);
-		return -1;
+		goto err;
 	}
+	/* wait for the chip to boot up */
 	k_msleep(1000);
 
 	ret = ch9120_wait_for_connection(cfg, CH9120_CONNECT_TIMEOUT_MS);
@@ -491,12 +491,11 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 		return -1;
 	}
 
-	if (ring_buf_is_empty(&sck->rx_buf)) {
-		errno = EAGAIN;
-		return -1;
-	}
-
 	if (sck->state != CH9120_SOCK_CONNECTED) {
+		if (!ring_buf_is_empty(&sck->rx_buf)) {
+			read = ring_buf_get(&sck->rx_buf, buf, len);
+			return (ssize_t)read;
+		}
 		errno = ENOTCONN;
 		return -1;
 	}
@@ -586,6 +585,7 @@ int ch9120_socket_create(int family, int type, int proto)
 
 	k_mutex_lock(&ch9120_runtime_data.drv_lock, K_FOREVER);
 
+	/* CH9120 only supports one mode of connection at a time */
 	if (sck->in_use) {
 		k_mutex_unlock(&ch9120_runtime_data.drv_lock);
 		LOG_ERR("Failed to create socket, already in use");
@@ -693,7 +693,7 @@ static int ch9120_init(const struct device *dev)
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_RESET,
 				NULL, 0, CH9120_UART_PRE_DELAY, 1000);
 	if (ret < 0) {
-		LOG_ERR("Failed to save config :%d", ret);
+		LOG_ERR("Failed to reset the chip :%d", ret);
 		return -1;
 	}
 	k_msleep(1000);
@@ -717,7 +717,7 @@ static int ch9120_init(const struct device *dev)
 	k_mutex_init(&data->drv_lock);
 
 	k_mutex_init(&(data->sock.lock));
-	k_sem_init(&(data->sock.rx_sem), 0, 1);
+	k_sem_init(&(data->sock.rx_sem), 0, K_SEM_MAX_LIMIT);
 	ring_buf_init(&(data->sock.rx_buf), sizeof(data->sock.rx_buf_data), data->sock.rx_buf_data);
 
 	LOG_INF("CH9120 Initialized Successfully with DHCP");
@@ -774,6 +774,6 @@ NET_DEVICE_DT_INST_OFFLOAD_DEFINE(
 NET_SOCKET_OFFLOAD_REGISTER(
 	ch9120,
 	CONFIG_NET_SOCKETS_OFFLOAD_PRIORITY,
-	AF_UNSPEC,
+	AF_INET,
 	ch9120_socket_is_supported,
 	ch9120_socket_create);
