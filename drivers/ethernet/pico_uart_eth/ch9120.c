@@ -65,6 +65,7 @@ struct ch9120_socket {
 	struct ring_buf rx_buf;
 	uint8_t rx_buf_data[ETH_CH9120_RX_BUF_SIZE];
 	struct k_sem rx_sem;
+	struct k_sem connect_sem;
 
 	struct k_mutex lock;
 };
@@ -76,6 +77,7 @@ struct ch9120_runtime {
 
 	struct ch9120_socket sock;
 	struct k_mutex drv_lock;
+	struct gpio_callback tcp_cb_data;
 };
 
 struct ch9120_config {
@@ -100,6 +102,26 @@ static const struct socket_op_vtable ch9120_socket_fd_op_vtable;
 static bool ch9120_is_tcp_connected(const struct ch9120_config *cfg)
 {
 	return gpio_pin_get_dt(&cfg->tcp_gpio) == 1;
+}
+
+static void ch9120_tcp_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins)
+{
+	struct ch9120_runtime *data = CONTAINER_OF(cb, struct ch9120_runtime, tcp_cb_data);
+    struct ch9120_socket *sck = &data->sock;
+	const struct ch9120_config *cfg = &ch9120_config_data;
+
+    if (ch9120_is_tcp_connected(cfg)) {
+        if (sck->state == CH9120_SOCK_CONNECTING) {
+            LOG_INF("Hardware connected! Waking up thread.");
+            k_sem_give(&sck->connect_sem);
+        }
+    } else {
+        if (sck->state == CH9120_SOCK_CONNECTED) {
+            LOG_ERR("TCP server forcefully disconnected (GPIO Trigger)!");
+            sck->state = CH9120_SOCK_OPEN;
+            k_sem_give(&sck->rx_sem);
+        }
+    }
 }
 
 static void ch9120_uart_flush(const struct device *uart_dev)
@@ -208,21 +230,17 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 	return -1;
 }
 
-static int ch9120_wait_for_connection(const struct ch9120_config *cfg,
+static int ch9120_wait_for_connection(struct ch9120_socket *sck,
 				uint32_t timeout_ms)
 {
-	uint32_t elapsed = 0;
+	int ret = k_sem_take(&sck->connect_sem, K_MSEC(timeout_ms));
 
-	while (elapsed < timeout_ms) {
-		if (ch9120_is_tcp_connected(cfg)) {
-			return 0;
-		}
-		k_msleep(CH9120_CONNECT_POLL_MS);
-		elapsed += CH9120_CONNECT_POLL_MS;
+	if (ret < 0) {
+		errno = ETIMEDOUT;
+		return -1;
 	}
 
-	errno = ETIMEDOUT;
-	return -1;
+	return 0;
 }
 
 static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
@@ -234,7 +252,7 @@ static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 	uint8_t *buf;
 	const struct device *dev = (const struct device *)user_data;
 	const struct ch9120_config *cfg = dev->config;
-	const struct ch9120_runtime *data = dev->data;
+	struct ch9120_runtime *data = dev->data;
 	struct ch9120_socket *sck = &data->sock;
 
 	/* Check if TCP is dropped */
@@ -410,7 +428,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	/* wait for the chip to boot up */
 	k_msleep(1000);
 
-	ret = ch9120_wait_for_connection(cfg, CH9120_CONNECT_TIMEOUT_MS);
+	ret = ch9120_wait_for_connection(sck, CH9120_CONNECT_TIMEOUT_MS);
 	if (ret < 0) {
 		LOG_ERR("TCP connection timed out!");
 		goto err;
@@ -665,6 +683,20 @@ static int ch9120_init(const struct device *dev)
 	gpio_pin_configure_dt(&cfg->cfg_gpio, GPIO_OUTPUT_INACTIVE);
 	gpio_pin_configure_dt(&cfg->tcp_gpio, GPIO_INPUT | GPIO_PULL_UP);
 
+	ret = gpio_pin_interrupt_configure_dt(&cfg->tcp_gpio, GPIO_INT_EDGE_BOTH);
+	if (ret < 0) {
+		LOG_ERR("Failed to configure TCP GPIO interrupt: %d", ret);
+		return ret;
+	}
+
+	gpio_init_callback(&data->tcp_cb_data, ch9120_tcp_cb, BIT(cfg->tcp_gpio.pin));
+
+	ret = gpio_add_callback(cfg->tcp_gpio.port, &data->tcp_cb_data);
+	if (ret < 0) {
+		LOG_ERR("Failed to add TCP GPIO callback: %d", ret);
+		return ret;
+	}
+
 	/* Initialize the Chip */
 	gpio_pin_set_dt(&cfg->rst_gpio, 1);
 	k_msleep(10);
@@ -718,7 +750,9 @@ static int ch9120_init(const struct device *dev)
 
 	k_mutex_init(&(data->sock.lock));
 	k_sem_init(&(data->sock.rx_sem), 0, K_SEM_MAX_LIMIT);
-	ring_buf_init(&(data->sock.rx_buf), sizeof(data->sock.rx_buf_data), data->sock.rx_buf_data);
+	k_sem_init(&(data->sock.connect_sem), 0, 1);
+	ring_buf_init(&(data->sock.rx_buf), sizeof(data->sock.rx_buf_data),
+					data->sock.rx_buf_data);
 
 	LOG_INF("CH9120 Initialized Successfully with DHCP");
 
