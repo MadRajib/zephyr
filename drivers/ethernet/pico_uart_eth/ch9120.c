@@ -32,12 +32,9 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 
 /* command codes */
 #define CH9120_CMD_SET_MODE			0x10
-#define CH9120_CMD_SET_CHIP_IP      0x11
 #define CH9120_CMD_SET_TARGET_IP	0x15
 #define CH9120_CMD_SET_TARGET_PORT	0x16
 #define CH9120_CMD_SET_DHCP			0x33
-
-#define CH9120_CMD_GET_DEVICE_IP	0x61
 #define CH9120_CMD_GET_MAC			0x81
 
 /* exit config mode sequence */
@@ -143,6 +140,7 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
 	const struct device *uart_dev = cfg->uart_dev;
 	uint8_t ack;
 	int ret;
+	uint16_t itr = timeout / 10;
 
 	/* Enter config mode */
 	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
@@ -162,7 +160,7 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg,
 	}
 
 	/* Wait for 0xAA Acknowledgment from CH9120 */
-	for (int t = 0; t < timeout; t++) {
+	for (int t = 0; t < itr; t++) {
 		ret = uart_poll_in(uart_dev, &ack);
 		if (ret == 0) {
 			if (ack == 0xAA) {
