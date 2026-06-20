@@ -25,25 +25,27 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 #define CH9120_BAUD_CONFIG			9600
 #define ETH_CH9120_RX_BUF_SIZE		CONFIG_ETH_CH9120_RX_BUF_SIZE
 #define CH9120_CONNECT_TIMEOUT_MS   5000
-#define CH9120_CONNECT_POLL_MS      10
 
 /* header bytes */
-#define CH9120_HDR_0			0x57
-#define CH9120_HDR_1			0xAB
+#define CH9120_HDR_0				0x57
+#define CH9120_HDR_1				0xAB
 
 /* command codes */
 #define CH9120_CMD_SET_MODE			0x10
+#define CH9120_CMD_SET_CHIP_IP      0x11
 #define CH9120_CMD_SET_TARGET_IP	0x15
 #define CH9120_CMD_SET_TARGET_PORT	0x16
 #define CH9120_CMD_SET_DHCP			0x33
+
+#define CH9120_CMD_GET_DEVICE_IP	0x61
 #define CH9120_CMD_GET_MAC			0x81
 
 /* exit config mode sequence */
-#define CH9120_CMD_SAVE			0x0d
-#define CH9120_CMD_RESET		0x0e
+#define CH9120_CMD_SAVE				0x0d
+#define CH9120_CMD_RESET			0x0e
 
 /* mode values */
-#define CH9120_MODE_TCP_CLIENT	0x01
+#define CH9120_MODE_TCP_CLIENT		0x01
 
 enum ch9120_sock_state {
 	CH9120_SOCK_CLOSED,
@@ -128,7 +130,7 @@ static void ch9120_uart_flush(const struct device *uart_dev)
 {
 	uint8_t c;
 
-	while (uart_fifo_read(uart_dev, &c, 1) > 0) {
+	while (uart_poll_in(uart_dev, &c) == 0) {
 		/* discard */
 	}
 }
@@ -193,6 +195,7 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 	uint8_t header[3] = { CH9120_HDR_0, CH9120_HDR_1, cmd };
 	const struct device *uart_dev = cfg->uart_dev;
 	size_t indx;
+	uint16_t itr = timeout / 10;
 
 	/* Enter config mode */
 	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
@@ -212,7 +215,7 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg,
 	}
 
 	indx = 0;
-	for (int t = 0; t < timeout; t++) {
+	for (int t = 0; t < itr; t++) {
 		while (uart_poll_in(uart_dev, &read_buf[indx]) == 0) {
 			indx++;
 			if (indx >= read_len) {
@@ -243,13 +246,14 @@ static int ch9120_wait_for_connection(struct ch9120_socket *sck,
 	return 0;
 }
 
-static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
+static void ch9120_uart_cb(const struct device *uart_dev, void *user_data)
 {
 	int rx;
 	int ret;
 	uint32_t claimed_len = 0;
 	uint32_t total_size = 0;
 	uint8_t *buf;
+	uint8_t c;
 	const struct device *dev = (const struct device *)user_data;
 	const struct ch9120_config *cfg = dev->config;
 	struct ch9120_runtime *data = dev->data;
@@ -263,9 +267,9 @@ static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 	}
 
 	while (true) {
-		uart_irq_update(dev_uart);
+		uart_irq_update(uart_dev);
 
-		if (uart_irq_rx_ready(dev_uart) <= 0) {
+		if (uart_irq_rx_ready(uart_dev) <= 0) {
 			break;
 		}
 
@@ -281,11 +285,14 @@ static void ch9120_uart_cb(const struct device *dev_uart, void *user_data)
 
 		if (!claimed_len) {
 			LOG_ERR("Rx buffer doesn't have enough space");
-			ch9120_uart_flush(dev_uart);
+
+			while (uart_fifo_read(uart_dev, &c, 1) > 0) {
+				/* discard */
+			}
 			break;
 		}
 
-		rx = uart_fifo_read(dev_uart, buf, claimed_len);
+		rx = uart_fifo_read(uart_dev, buf, claimed_len);
 		if (rx <= 0) {
 			break;
 		}
@@ -775,6 +782,10 @@ static struct offloaded_if_api ch9120_if_apis = {
 	.iface_api.init = ch9120_iface_init,
 };
 
+/*
+ * NOTE: Non-blocking I/O (O_NONBLOCK / SO_RCVTIMEO) is not yet
+ * supported.Adding non-blocking support is tracked as future work.
+ */
 static const struct socket_op_vtable ch9120_socket_fd_op_vtable = {
 	.fd_vtable = {
 		.read = ch9120_read,
