@@ -27,6 +27,7 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 #define CH9120_NODE               DT_INST(0, wch_ch9120)
 #define CH9120_UART_PRE_DELAY     30
 #define CH9120_BAUD_CONFIG        9600
+#define CH9120_BAUD_DATA          CONFIG_ETH_CH9120_BAUDRATE
 #define ETH_CH9120_RX_BUF_SIZE    CONFIG_ETH_CH9120_RX_BUF_SIZE
 #define CH9120_CONNECT_TIMEOUT_MS 5000
 
@@ -48,6 +49,8 @@ LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 /* mode values */
 #define CH9120_MODE_TCP_CLIENT 0x01
 #define CH9120_MODE_UDP_CLIENT 0x03
+
+#define CH9120_CMD_SET_BAUD 0x21
 
 enum ch9120_sock_state {
 	CH9120_SOCK_CLOSED,
@@ -149,14 +152,25 @@ static void ch9120_uart_flush_rx_fifo(const struct device *uart_dev)
 static int ch9120_send_cmd_wait(const struct ch9120_config *cfg, uint8_t cmd, const uint8_t *data,
 				size_t len, k_timeout_t timeout)
 {
-	uint8_t header[3] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
-	const struct device *uart_dev = cfg->uart_dev;
 	uint8_t ack;
-	int ret;
+	int ret = -EIO;
 	k_timepoint_t deadline;
+	uint8_t header[3] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
+	struct uart_config current_cfg;
+	const struct device *uart_dev = cfg->uart_dev;
+
+	uart_config_get(uart_dev, &current_cfg);
+
+	if (current_cfg.baudrate != CH9120_BAUD_CONFIG) {
+		struct uart_config cfg_conf = current_cfg;
+
+		cfg_conf.baudrate = CH9120_BAUD_CONFIG;
+		uart_configure(uart_dev, &cfg_conf);
+	}
 
 	/* Enter config mode */
 	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
+	k_msleep(10);
 
 	ch9120_uart_flush(uart_dev);
 
@@ -176,37 +190,52 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg, uint8_t cmd, co
 		ret = uart_poll_in(uart_dev, &ack);
 		if (ret == 0) {
 			if (ack == 0xAA) {
-				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-				return 0;
+				ret = 0;
+				goto cleanup;
 			}
 
 			if (ack == 0xEE) {
 				LOG_ERR("CH9120 rejected command 0x%02x", cmd);
-				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
 				errno = EPROTO;
-				return -1;
+				ret = -1;
+				goto cleanup;
 			}
 		}
 		k_msleep(10);
 	} while (!sys_timepoint_expired(deadline));
 
 	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
+cleanup:
 	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
 
-	errno = EIO;
-	return -1;
+	if (current_cfg.baudrate != CH9120_BAUD_CONFIG) {
+		uart_configure(uart_dev, &current_cfg);
+	}
+
+	return ret;
 }
 
 static int ch9120_send_cmd_read(const struct ch9120_config *cfg, uint8_t cmd, const uint8_t *data,
 				size_t len, uint8_t *read_buf, size_t read_len, k_timeout_t timeout)
 {
-	uint8_t header[3] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
-	const struct device *uart_dev = cfg->uart_dev;
 	size_t indx;
 	k_timepoint_t deadline;
+	uint8_t header[3] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
+	struct uart_config current_cfg;
+	const struct device *uart_dev = cfg->uart_dev;
+
+	uart_config_get(uart_dev, &current_cfg);
+
+	if (current_cfg.baudrate != CH9120_BAUD_CONFIG) {
+		struct uart_config cfg_conf = current_cfg;
+
+		cfg_conf.baudrate = CH9120_BAUD_CONFIG;
+		uart_configure(uart_dev, &cfg_conf);
+	}
 
 	/* Enter config mode */
 	gpio_pin_set_dt(&cfg->cfg_gpio, 1);
+	k_msleep(10);
 
 	ch9120_uart_flush(uart_dev);
 
@@ -226,18 +255,22 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg, uint8_t cmd, co
 		while (uart_poll_in(uart_dev, &read_buf[indx]) == 0) {
 			indx++;
 			if (indx >= read_len) {
-				gpio_pin_set_dt(&cfg->cfg_gpio, 0);
-				return 0;
+				goto cleanup;
 			}
 		}
 		k_msleep(10);
 	} while (!sys_timepoint_expired(deadline));
 
 	LOG_ERR("Timeout waiting for ACK on cmd: 0x%02x", cmd);
+	errno = EIO;
+cleanup:
 	gpio_pin_set_dt(&cfg->cfg_gpio, 0);
 
-	errno = EIO;
-	return -1;
+	if (current_cfg.baudrate != CH9120_BAUD_CONFIG) {
+		uart_configure(uart_dev, &current_cfg);
+	}
+
+	return (indx >= read_len) ? 0 : -1;
 }
 
 static int ch9120_wait_for_connection(struct ch9120_socket *sck, k_timeout_t timeout)
@@ -386,7 +419,7 @@ static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
 
 static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
 {
-	int ret;
+	int ret = 0;
 	uint8_t mode = CH9120_MODE_UDP_CLIENT;
 	uint16_t dst_port = 0U;
 	uint8_t dst_ip[4];
@@ -678,6 +711,8 @@ static int ch9120_init(const struct device *dev)
 {
 	int ret;
 	uint8_t enable_flag;
+	uint32_t target_baud = CH9120_BAUD_DATA;
+	uint8_t baud_bytes[4];
 	struct ch9120_runtime *data = dev->data;
 	const struct ch9120_config *cfg = dev->config;
 
@@ -727,6 +762,13 @@ static int ch9120_init(const struct device *dev)
 	}
 	k_msleep(500);
 
+	sys_put_le32(target_baud, baud_bytes);
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_BAUD, baud_bytes, 4, K_MSEC(1000));
+	if (ret < 0) {
+		LOG_ERR("Failed to set baud rate: %d", ret);
+		return ret;
+	}
+
 	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SAVE, NULL, 0, K_MSEC(1000));
 	if (ret < 0) {
 		LOG_ERR("Failed to save config :%d", ret);
@@ -740,6 +782,14 @@ static int ch9120_init(const struct device *dev)
 		return -1;
 	}
 	k_msleep(1000);
+
+	uart_cfg.baudrate = target_baud;
+	ret = uart_configure(cfg->uart_dev, &uart_cfg);
+	if (ret < 0) {
+		LOG_ERR("Failed to configure Zephyr UART to %d", target_baud);
+		return ret;
+	}
+	LOG_INF("Data UART speed successfully increased to %d bps!", target_baud);
 
 	ret = ch9120_send_cmd_read(cfg, CH9120_CMD_GET_MAC, NULL, 0, data->mac_addr,
 				   sizeof(data->mac_addr), K_MSEC(1000));
